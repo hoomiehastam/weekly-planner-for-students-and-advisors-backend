@@ -49,8 +49,12 @@ function setTokenCookie(res, token) {
 }
 
 // کوکی توکن را حذف می‌کند (برای خروج)
+// نکته‌ی مهم: مرورگر فقط «حذف» کوکی‌ای را می‌پذیرد که با همان attributeهای ست‌شدن
+// (secure / sameSite / path) همراه باشد. پس همان گزینه‌ها را پاس می‌دهیم به‌جز maxAge —
+// پاس‌دادن maxAge باعث می‌شود کوکی به‌جای حذف، دوباره ۷ روز تمدید شود!
 function clearTokenCookie(res) {
-  res.clearCookie(TOKEN_COOKIE);
+  const { maxAge: _ignored, ...attrs } = tokenCookieOptions();
+  res.clearCookie(TOKEN_COOKIE, attrs);
 }
 
 module.exports = {
