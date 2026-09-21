@@ -31,12 +31,35 @@ async function createExam(req, res, next) {
       return res.status(400).json({ error: 'عنوان، دانش‌آموز، زمان شروع و مدت الزامی هستند' });
     }
 
-    // اطمینان از اینکه دانش‌آموز به این مشاور متصل است
-    const link = await prisma.advisorStudentLink.findFirst({
-      where: { advisorId: req.user.id, studentId },
-    });
-    if (!link) {
-      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست' });
+    // حالت گروهی: آرایه‌ی studentIds — یک آزمون برای چند دانش‌آموز ساخته می‌شود
+    const studentIds = Array.isArray(req.body.studentIds) ? req.body.studentIds : null;
+
+    // اطمینان از اینکه دانش‌آموز(ها) به این مشاور متصل هستند
+    let links = null;
+    if (studentIds) {
+      if (studentIds.length === 0) {
+        return res.status(400).json({ error: 'حداقل یک دانش‌آموز انتخاب کنید' });
+      }
+      if (new Set(studentIds).size !== studentIds.length) {
+        return res.status(400).json({ error: 'دانش‌آموزهای تکراری در لیست وجود دارد' });
+      }
+      links = await prisma.advisorStudentLink.findMany({
+        where: { advisorId: req.user.id, studentId: { in: studentIds } },
+      });
+      const linkedIds = new Set(links.map((l) => l.studentId));
+      const missing = studentIds.filter((sid) => !linkedIds.has(sid));
+      if (missing.length > 0) {
+        return res
+          .status(403)
+          .json({ error: 'برخی از دانش‌آموزهای انتخاب‌شده به شما متصل نیستند' });
+      }
+    } else {
+      const link = await prisma.advisorStudentLink.findFirst({
+        where: { advisorId: req.user.id, studentId },
+      });
+      if (!link) {
+        return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست' });
+      }
     }
 
     const mins = Number(durationMinutes);
@@ -51,25 +74,59 @@ async function createExam(req, res, next) {
     // اعتبارسنجی و نرمال‌سازی سؤال‌ها (منبع مشترک: utils/examValidation.js)
     const normalizedQuestions = validateQuestions(questions);
 
-    const exam = await prisma.exam.create({
-      data: {
+    // ساخت آزمون‌ها: تک‌دانش‌آموزی یا گروهی (هر دانش‌آموز نسخه‌ی مستقل خودش را می‌گیرد
+    // تا پیشرفت، ارسال و نمره‌دهی هرکدام جدا محاسبه شود)
+    const targets = studentIds ? studentIds : [studentId];
+    const created = [];
+    if (targets.length === 1) {
+      const exam = await prisma.exam.create({
+        data: {
+          title: title.trim(),
+          description: description ? description.trim() : null,
+          studentId: targets[0],
+          advisorId: req.user.id,
+          scheduledAt: new Date(scheduledAt),
+          durationMinutes: mins,
+          visibleToStudent: !!visibleToStudent,
+          // اگر visibleToStudent=false و visibleFrom ارسال شده، از آن استفاده کن؛ در غیر این‌صورت null (از scheduledAt استفاده می‌شود)
+          visibleFrom: visibleFrom ? new Date(visibleFrom) : null,
+          questions: {
+            create: normalizedQuestions,
+          },
+        },
+        include: EXAM_INCLUDE_FOR_ADVISOR,
+      });
+      created.push(exam);
+    } else {
+      // حالت گروهی — همه در یک تراکنش، تا یا همه ساخته شوند یا هیچ‌کدام
+      const rows = targets.map((sid) => ({
         title: title.trim(),
         description: description ? description.trim() : null,
-        studentId,
+        studentId: sid,
         advisorId: req.user.id,
         scheduledAt: new Date(scheduledAt),
         durationMinutes: mins,
         visibleToStudent: !!visibleToStudent,
-        // اگر visibleToStudent=false و visibleFrom ارسال شده، از آن استفاده کن؛ در غیر این‌صورت null (از scheduledAt استفاده می‌شود)
         visibleFrom: visibleFrom ? new Date(visibleFrom) : null,
-        questions: {
-          create: normalizedQuestions,
-        },
-      },
-      include: EXAM_INCLUDE_FOR_ADVISOR,
-    });
+      }));
+      const made = await prisma.$transaction(
+        rows.map((data) =>
+          prisma.exam.create({
+            data: { ...data, questions: { create: normalizedQuestions } },
+          })
+        )
+      );
+      // همه را دقیقاً با idهای ساخته‌شده برمی‌گردانیم (کوئری جدا، چون include داخل transaction ساده نیست)
+      const madeIds = made.map((m) => m.id);
+      const exams = await prisma.exam.findMany({
+        where: { id: { in: madeIds } },
+        include: EXAM_INCLUDE_FOR_ADVISOR,
+        orderBy: { createdAt: 'desc' },
+      });
+      created.push(...exams);
+    }
 
-    res.status(201).json({ exam });
+    res.status(201).json({ exam: created[0], exams: created, count: created.length });
   } catch (err) {
     next(err);
   }
@@ -453,6 +510,7 @@ async function submitExam(req, res, next) {
     // به‌روزرسانی‌ها را یکجا در یک transaction می‌فرستیم (بدون N+1).
     let totalScore = 0;
     let maxScore = 0;
+    let mcMaxScore = 0; // فقط نمره‌ی سؤالات تستی — برای آزمون‌های ترکیبی
     let hasDescriptive = false;
     const answerByQuestion = new Map(
       submission.answers.map((a) => [a.questionId, a])
@@ -463,6 +521,7 @@ async function submitExam(req, res, next) {
       if (q.type === 'DESCRIPTIVE') {
         hasDescriptive = true;
       } else if (q.type === 'MULTIPLE_CHOICE') {
+        mcMaxScore += q.points || 1;
         const answer = answerByQuestion.get(q.id);
         if (answer) {
           const expected =
@@ -510,6 +569,8 @@ async function submitExam(req, res, next) {
       submission: updated,
       autoScore: totalScore,
       maxScore,
+      // برای آزمون ترکیبی: بیشترین نمره‌ی قابل کسب از سؤالات تستی (بدون تشریحی)
+      autoMaxScore: hasDescriptive ? mcMaxScore : undefined,
       autoGraded: !hasDescriptive,
       deadline,
       late,
@@ -537,16 +598,20 @@ async function getExamSubmissions(req, res, next) {
 
     const where = { examId };
     const pagination = getPagination(req);
+    const submissionsInclude = {
+      answers: {
+        include: { question: true },
+      },
+      student: {
+        select: { id: true, fullName: true },
+      },
+    };
     let submissions, total;
     if (pagination) {
       total = await prisma.examSubmission.count({ where });
       submissions = await prisma.examSubmission.findMany({
         where,
-        include: {
-          answers: {
-            include: { question: true },
-          },
-        },
+        include: submissionsInclude,
         orderBy: { submittedAt: 'desc' },
         skip: pagination.skip,
         take: pagination.take,
@@ -554,11 +619,7 @@ async function getExamSubmissions(req, res, next) {
     } else {
       submissions = await prisma.examSubmission.findMany({
         where,
-        include: {
-          answers: {
-            include: { question: true },
-          },
-        },
+        include: submissionsInclude,
         orderBy: { submittedAt: 'desc' },
       });
     }
