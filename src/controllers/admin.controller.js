@@ -152,18 +152,21 @@ async function rejectAdvisor(req, res, next) {
 }
 
 // نمای کلی سوپرادمین: هر مشاور و تعداد دانش‌آموزانش
-// شامل شماره تماس مشاور و دانش‌آموزان برای ارتباط
+// شامل شماره تماس مشاور، رشته‌های تخصص و دانش‌آموزان برای ارتباط
 async function listAdvisorsOverview(req, res, next) {
   try {
     const advisors = await prisma.user.findMany({
-      where: { role: { in: ['ADVISOR', 'SUPERADMIN'] }, status: 'ACTIVE' },
+      where: { role: { in: ['ADVISOR', 'SUPERADMIN'] } },
       select: {
         id: true,
         fullName: true,
         email: true,
         phone: true,
         bio: true,
+        status: true,
+        field: true,
         institute: { select: { id: true, name: true } },
+        advisorFields: { select: { field: true } },
         asAdvisorLinks: {
           select: {
             student: {
@@ -179,7 +182,131 @@ async function listAdvisorsOverview(req, res, next) {
       },
       orderBy: { fullName: 'asc' },
     });
-    res.json({ advisors });
+    res.json({
+      advisors: advisors.map((a) => ({
+        ...a,
+        fields: a.advisorFields.map((af) => af.field),
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ====== تخصیص رشته‌های تخصص به مشاور ======
+// سوپرادمین می‌تواند رشته‌های تخصص مشاور را ویرایش کند.
+// body: { fields: ['HUMANITIES', 'MATH_PHYSICS', ...] }
+// آرایه‌ی خالی مجاز است (یعنی پاک‌کردن همه‌ی رشته‌ها — ولی این توصیه نمی‌شود)
+async function assignAdvisorFields(req, res, next) {
+  try {
+    const { id } = req.params;
+    let { fields } = req.body;
+
+    // اعتبارسنجی: fields باید آرایه باشد
+    if (!Array.isArray(fields)) {
+      return res.status(400).json({ error: 'fields باید آرایه باشد' });
+    }
+    // حذف تکراری‌ها و اعتبارسنجی مقادیر
+    const validFields = ['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'];
+    const unique = [...new Set(fields)];
+    const invalid = unique.find((f) => !validFields.includes(f));
+    if (invalid) {
+      return res.status(400).json({ error: `رشته‌ی نامعتبر: ${invalid}` });
+    }
+    if (unique.length > 3) {
+      return res.status(400).json({ error: 'نهایتاً ۳ رشته می‌توان انتخاب کرد' });
+    }
+
+    const advisor = await prisma.user.findFirst({ where: { id, role: 'ADVISOR' } });
+    if (!advisor) {
+      return res.status(404).json({ error: 'مشاور یافت نشد' });
+    }
+
+    // در یک تراکنش: حذف همه‌ی رشته‌های قبلی + اضافه‌کردن رشته‌های جدید
+    await prisma.$transaction([
+      prisma.advisorField.deleteMany({ where: { userId: id } }),
+      ...(unique.length > 0
+        ? [prisma.advisorField.createMany({
+            data: unique.map((f) => ({ userId: id, field: f })),
+          })]
+        : []),
+    ]);
+
+    res.json({
+      message: unique.length > 0
+        ? `رشته‌های تخصص مشاور به‌روزرسانی شد: ${unique.join('، ')}`
+        : 'همه‌ی رشته‌های تخصص مشاور پاک شد',
+      advisor: { id, fullName: advisor.fullName, fields: unique },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ====== غیرفعال‌کردن مشاور (SUSPENDED) ======
+// مشاور می‌تواند دوباره فعال شود (reactivate)
+// مشاور SUSPENDED نمی‌تواند وارد شود و در فهرست مشاوران فعال دانش‌آموزان نیست
+async function deactivateAdvisor(req, res, next) {
+  try {
+    const { id } = req.params;
+    const advisor = await prisma.user.findFirst({ where: { id, role: 'ADVISOR' } });
+    if (!advisor) {
+      return res.status(404).json({ error: 'مشاور یافت نشد' });
+    }
+    if (advisor.status === 'SUSPENDED') {
+      return res.status(400).json({ error: 'این مشاور از قبل غیرفعال است' });
+    }
+    await prisma.user.update({
+      where: { id },
+      data: { status: 'SUSPENDED' },
+    });
+    res.json({ message: `مشاور «${advisor.fullName}» غیرفعال شد`, advisor: { id, status: 'SUSPENDED' } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ====== فعال‌کردن مجدد مشاور (ACTIVE) ======
+async function reactivateAdvisor(req, res, next) {
+  try {
+    const { id } = req.params;
+    const advisor = await prisma.user.findFirst({ where: { id, role: 'ADVISOR' } });
+    if (!advisor) {
+      return res.status(404).json({ error: 'مشاور یافت نشد' });
+    }
+    if (advisor.status !== 'SUSPENDED') {
+      return res.status(400).json({ error: 'این مشاور از قبل فعال است یا هنوز تأیید نشده' });
+    }
+    await prisma.user.update({
+      where: { id },
+      data: { status: 'ACTIVE' },
+    });
+    res.json({ message: `مشاور «${advisor.fullName}» دوباره فعال شد`, advisor: { id, status: 'ACTIVE' } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ====== حذف مشاور (hard delete) ======
+// این عمل قابل بازگشت نیست. همه‌ی داده‌های مرتبط (برنامه‌ها، آزمون‌ها، یادآورها، linkها)
+// به‌خاطر onDelete: Cascade حذف می‌شوند.
+// توصیه: اول غیرفعال‌کردن، بعد اگر مطمئن بودید حذف کنید.
+async function deleteAdvisor(req, res, next) {
+  try {
+    const { id } = req.params;
+    const advisor = await prisma.user.findFirst({ where: { id, role: 'ADVISOR' } });
+    if (!advisor) {
+      return res.status(404).json({ error: 'مشاور یافت نشد' });
+    }
+    const studentCount = await prisma.advisorStudentLink.count({
+      where: { advisorId: id },
+    });
+    // حذف کاربر — همه‌ی روابط cascade می‌شوند
+    await prisma.user.delete({ where: { id } });
+    res.json({
+      message: `مشاور «${advisor.fullName}» حذف شد. ${studentCount} اتصال دانش‌آموز نیز پاک شد.`,
+      advisor: { id, fullName: advisor.fullName },
+    });
   } catch (err) {
     next(err);
   }
@@ -394,5 +521,9 @@ module.exports = {
   deleteInstitute,
   updateInstituteSubscription,
   assignAdvisorToInstitute,
+  assignAdvisorFields,
+  deactivateAdvisor,
+  reactivateAdvisor,
+  deleteAdvisor,
   createUserOtp,
 };

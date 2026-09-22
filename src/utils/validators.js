@@ -24,14 +24,17 @@ const registerSchema = z.object({
   phone: optionalText(20),
   bio: optionalText(500),
   advisorId: z.string().uuid('شناسه‌ی مشاور نامعتبر است').optional(),
-  // رشته‌ی تحصیلی — برای دانش‌آموز و مشاور الزامی است
+  // رشته‌ی تحصیلی — برای دانش‌آموز الزامی (تکی)، برای مشاور اختیاری (چون می‌تواند fields بفرستد)
   field: z.enum(['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'], {
     errorMap: () => ({ message: 'رشته باید یکی از HUMANITIES، MATH_PHYSICS یا EXPERIMENTAL باشد' }),
-  }),
-  // برای ثبت‌نام مؤسسه‌ای: شناسه‌ی مؤسسه (به‌جای کد دعوت)
-  // اگر ارسال شود، درخواست عضویت PENDING به مدیر مؤسسه می‌رود
+  }).optional(),
+  // رشته‌های تخصص مشاور — آرایه‌ای از رشته‌ها (فقط برای ADVISOR)
+  // اگر ارسال شود، field تکی نادیده گرفته می‌شود
+  fields: z.array(
+    z.enum(['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'])
+  ).min(1, 'حداقل یک رشته باید انتخاب شود').max(3, 'نهایتاً ۳ رشته').optional(),
+  // برای ثبت‌نام مؤسسه‌ای: شناسه‌ی مؤسسه
   instituteId: z.string().cuid('شناسه‌ی مؤسسه نامعتبر است').optional().nullable(),
-  // هنوز instituteCode هم قبول می‌کنیم برای backward compatibility (مهاجرت ملایم)
   instituteCode: z.string().trim().min(1).max(20).optional(),
 });
 
@@ -64,6 +67,13 @@ const updateInstituteSubscriptionSchema = z.object({
 // تخصیص مشاور به مؤسسه — instituteId می‌تواند null باشد (یعنی مستقل شدن)
 const assignInstituteSchema = z.object({
   instituteId: z.string().cuid().optional().nullable(),
+});
+
+// تخصیص رشته‌های تخصص به مشاور — آرایه‌ای از رشته‌ها (می‌تواند خالی باشد برای پاک‌کردن)
+const assignAdvisorFieldsSchema = z.object({
+  fields: z.array(
+    z.enum(['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'])
+  ).max(3, 'نهایتاً ۳ رشته').default([]),
 });
 
 // ساخت OTP برای ورود یک‌بار مصرف — طول مدت اعتبار به ساعت (پیش‌فرض ۲۴)
@@ -125,6 +135,7 @@ module.exports = {
     resetPassword: resetPasswordSchema,
     updateInstituteSubscription: updateInstituteSubscriptionSchema,
     assignInstitute: assignInstituteSchema,
+    assignAdvisorFields: assignAdvisorFieldsSchema,
     createOtp: createOtpSchema,
   },
 };

@@ -15,14 +15,13 @@ const RESET_TOKEN_EXPIRY_HOURS = 1;
 //   مشاور مستقل: PENDING تا سوپرادمین تأیید کند
 //   مشاور مؤسسه‌ای: PENDING تا مدیر مؤسسه تأیید کند
 //
-// تغییرات مهم در این نسخه:
-//   ۱) رشته‌ی تحصیلی (field) برای دانش‌آموز و مشاور الزامی است
-//   ۲) instituteId به‌جای instituteCode پذیرفته می‌شود (instituteCode هم هنوز کار می‌کند برای مهاجرت)
-//   ۳) link مشاور ↔ دانش‌آموز با status=PENDING ساخته می‌شود — مشاور باید تأیید کند
-//   ۴) مرز tenant همچنان حفظ می‌شود: مشاور و دانش‌آموز باید هم‌مؤسسه باشند یا هر دو مستقل
+// تغییرات مهم:
+//   ۱) دانش‌آموز: field تکی الزامی است (رشته‌ی خودش)
+//   ۲) مشاور: fields آرایه‌ای الزامی است (می‌تواند چند رشته داشته باشد) → در جدول AdvisorField ذخیره می‌شود
+//   ۳) link با مشاور PENDING ساخته می‌شود
 async function register(req, res, next) {
   try {
-    const { fullName, email, password, role, advisorId, phone, bio, field, instituteId, instituteCode } = req.body;
+    const { fullName, email, password, role, advisorId, phone, bio, field, fields, instituteId, instituteCode } = req.body;
 
     if (!fullName || !email || !password || !role) {
       return res.status(400).json({ error: 'همه‌ی فیلدها الزامی هستند' });
@@ -32,9 +31,34 @@ async function register(req, res, next) {
       return res.status(400).json({ error: 'نقش انتخاب‌شده معتبر نیست' });
     }
 
-    // رشته‌ی تحصیلی برای دانش‌آموز و مشاور الزامی است
-    if (!field || !['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'].includes(field)) {
-      return res.status(400).json({ error: 'انتخاب رشته‌ی تحصیلی الزامی است' });
+    // اعتبارسنجی رشته‌ی تحصیلی
+    //   دانش‌آموز: field تکی الزامی
+    //   مشاور: fields آرایه‌ای الزامی (حداقل یک رشته)
+    let studentField = null;
+    let advisorFields = null;
+    if (role === 'STUDENT') {
+      if (!field || !['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'].includes(field)) {
+        return res.status(400).json({ error: 'انتخاب رشته‌ی تحصیلی الزامی است' });
+      }
+      studentField = field;
+    } else {
+      // ADVISOR
+      // fields آرایه‌ای قبول می‌کنیم؛ اگر field تکی هم ارسال شده، آن را به آرایه اضافه می‌کنیم
+      let fieldsArray = Array.isArray(fields) ? fields : [];
+      if (field && !fieldsArray.includes(field)) {
+        fieldsArray = [field, ...fieldsArray];
+      }
+      // حذف تکراری‌ها
+      fieldsArray = [...new Set(fieldsArray)];
+      if (fieldsArray.length === 0) {
+        return res.status(400).json({ error: 'انتخاب حداقل یک رشته‌ی تخصص الزامی است' });
+      }
+      // اعتبارسنجی مقادیر
+      const invalid = fieldsArray.find((f) => !['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'].includes(f));
+      if (invalid) {
+        return res.status(400).json({ error: 'رشته‌ی تحصیلی نامعتبر است' });
+      }
+      advisorFields = fieldsArray;
     }
 
     const existing = await prisma.user.findUnique({ where: { email } });
@@ -42,7 +66,6 @@ async function register(req, res, next) {
       return res.status(409).json({ error: 'این ایمیل قبلاً ثبت شده است' });
     }
 
-    // نرمال‌سازی شماره تماس، توضیحات و اعتبارسنجی رمز عبور
     let phoneValue = null;
     let bioValue = null;
     let passwordValue;
@@ -55,7 +78,6 @@ async function register(req, res, next) {
     }
 
     // عضویت اختیاری در مؤسسه
-    // instituteId اولویت دارد؛ اگر نبود instituteCode را امتحان می‌کنیم (برای backward compatibility)
     let institute = null;
     if (instituteId) {
       institute = await prisma.institute.findUnique({ where: { id: instituteId } });
@@ -73,8 +95,8 @@ async function register(req, res, next) {
     }
 
     // دانش‌آموز باید حتماً یک مشاور فعال را انتخاب کند
-    // + قانون مرز مؤسسه: مشاور و دانش‌آموز باید هم‌مؤسسه باشند یا هر دو مستقل
-    // + در حالت جدید، link با status=PENDING ساخته می‌شود — مشاور باید تأیید کند
+    // + مرز مؤسسه: مشاور و دانش‌آموز باید هم‌مؤسسه باشند یا هر دو مستقل
+    // + مشاور باید رشته‌ی دانش‌آموز را در تخصص‌هایش داشته باشد
     let advisor = null;
     if (role === 'STUDENT') {
       if (!advisorId) {
@@ -82,6 +104,7 @@ async function register(req, res, next) {
       }
       advisor = await prisma.user.findFirst({
         where: { id: advisorId, role: 'ADVISOR', status: 'ACTIVE' },
+        include: { advisorFields: { select: { field: true } } },
       });
       if (!advisor) {
         return res.status(400).json({ error: 'مشاور انتخاب‌شده یافت نشد یا هنوز فعال نیست' });
@@ -95,16 +118,20 @@ async function register(req, res, next) {
             : 'این مشاور عضو یک مؤسسه است؛ برای ثبت‌نام نزد او باید عضو همان مؤسسه باشی',
         });
       }
+      // بررسی تطابق رشته: رشته‌ی دانش‌آموز باید در تخصص‌های مشاور باشد
+      const advisorFieldList = advisor.advisorFields.map((af) => af.field);
+      if (!advisorFieldList.includes(studentField)) {
+        return res.status(400).json({
+          error: 'این مشاور در رشته‌ی شما تخصص ندارد. لطفاً مشاوری از همان رشته انتخاب کنید.',
+        });
+      }
     }
 
     const passwordHash = await bcrypt.hash(passwordValue, SALT_ROUNDS);
 
-    // وضعیت کاربر (مستقل از وضعیت link):
-    //   - دانش‌آموز مستقل: ACTIVE (می‌تواند وارد شود، ولی link PENDING است تا مشاور تأیید کند)
-    //   - دانش‌آموز مؤسسه‌ای: PENDING (مدیر مؤسسه باید تأیید کند)
-    //   - مشاور (مستقل یا مؤسسه‌ای): PENDING
     const status = role === 'STUDENT' && !institute ? 'ACTIVE' : 'PENDING';
 
+    // ساخت کاربر + رشته‌های تخصص مشاور (اگر مشاور است) در یک تراکنش
     const user = await prisma.user.create({
       data: {
         fullName,
@@ -114,19 +141,20 @@ async function register(req, res, next) {
         status,
         phone: phoneValue,
         bio: bioValue,
-        field,
+        field: role === 'STUDENT' ? studentField : null,
         instituteId: institute ? institute.id : null,
+        ...(role === 'ADVISOR' && advisorFields
+          ? { advisorFields: { create: advisorFields.map((f) => ({ field: f })) } }
+          : {}),
       },
     });
 
     if (role === 'STUDENT') {
-      // link با status=PENDING ساخته می‌شود — مشاور در پنلش درخواست را می‌بیند و تصمیم می‌گیرد
       await prisma.advisorStudentLink.create({
         data: { advisorId: advisor.id, studentId: user.id, status: 'PENDING' },
       });
     }
 
-    // فقط کاربر فعال بلافاصله توکن می‌گیرد؛ بقیه باید تأیید شوند
     if (status === 'ACTIVE') {
       const token = generateToken(user);
       setTokenCookie(res, token);
@@ -183,6 +211,9 @@ async function login(req, res, next) {
         if (user.status === 'REJECTED') {
           return res.status(403).json({ error: 'درخواست عضویت شما تایید نشد' });
         }
+        if (user.status === 'SUSPENDED') {
+          return res.status(403).json({ error: 'حساب شما توسط سوپرادمین غیرفعال شده است. با پشتیبانی تماس بگیرید.' });
+        }
 
         const token = generateToken(user);
         setTokenCookie(res, token);
@@ -233,6 +264,10 @@ async function login(req, res, next) {
 
     if (user.status === 'REJECTED') {
       return res.status(403).json({ error: 'درخواست عضویت شما تایید نشد' });
+    }
+
+    if (user.status === 'SUSPENDED') {
+      return res.status(403).json({ error: 'حساب شما توسط سوپرادمین غیرفعال شده است. با پشتیبانی تماس بگیرید.' });
     }
 
     const token = generateToken(user);

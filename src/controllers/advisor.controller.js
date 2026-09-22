@@ -3,10 +3,8 @@ const prisma = require('../config/prisma');
 // این فهرست بدون نیاز به ورود در دسترس است، چون دانش‌آموز باید قبل از ثبت‌نام مشاورش را انتخاب کند.
 // پارامترهای query:
 //   ?instituteId=XXX  — فقط مشاوران همان مؤسسه (اگر ارسال نشود: فقط مشاوران مستقل)
-//   ?field=HUMANITIES|MATH_PHYSICS|EXPERIMENTAL  — فقط مشاوران همان رشته
-//   هر دو پارامتر می‌توانند با هم ترکیب شوند.
-// برمی‌گرداند: id, fullName, bio, field, institute (نام)
-// برای صفحه‌ی ثبت‌نام، اطلاعات کافی برای کارت بصری دارد.
+//   ?field=HUMANITIES|MATH_PHYSICS|EXPERIMENTAL  — فقط مشاورانی که این رشته را در تخصص‌هایشان دارند
+// برمی‌گرداند: id, fullName, bio, fields (آرایه رشته‌ها), activeStudentCount
 async function listActiveAdvisors(req, res, next) {
   try {
     const { instituteId, field } = req.query;
@@ -41,10 +39,12 @@ async function listActiveAdvisors(req, res, next) {
     // شرط فیلتر:
     //   - با instituteId: فقط مشاوران همون مؤسسه
     //   - بدون instituteId: فقط مشاوران مستقل (instituteId === null)
-    // سوپرادمین هم در حالت مستقل در فهرست است (می‌تواند مشاور پیش‌فرض باشد)
+    //   - با field: فقط مشاورانی که این رشته را در advisorFields دارند
     const where = {
       status: 'ACTIVE',
-      ...(fieldFilter ? { field: fieldFilter } : {}),
+      ...(fieldFilter
+        ? { advisorFields: { some: { field: fieldFilter } } }
+        : {}),
       ...(filterByInstitute
         ? { role: 'ADVISOR', instituteId: targetInstituteId }
         : { role: { in: ['ADVISOR', 'SUPERADMIN'] }, instituteId: null }),
@@ -57,7 +57,9 @@ async function listActiveAdvisors(req, res, next) {
         fullName: true,
         bio: true,
         field: true,
-        // تعداد دانش‌آموزان فعال هر مشاور — برای نمایش در کارت بصری
+        // رشته‌های تخصص مشاور (چندتا)
+        advisorFields: { select: { field: true } },
+        // تعداد دانش‌آموزان فعال هر مشاور
         _count: {
           select: {
             asAdvisorLinks: { where: { status: 'ACTIVE' } },
@@ -72,7 +74,8 @@ async function listActiveAdvisors(req, res, next) {
         id: a.id,
         fullName: a.fullName,
         bio: a.bio,
-        field: a.field,
+        field: a.field, // برای backward compatibility
+        fields: a.advisorFields.map((af) => af.field), // آرایه‌ی رشته‌ها
         activeStudentCount: a._count.asAdvisorLinks,
       })),
       filter: {

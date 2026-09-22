@@ -22,6 +22,7 @@ enum UserStatus {
   PENDING
   ACTIVE
   REJECTED
+  SUSPENDED // توسط سوپرادمین غیرفعال شده — قابل بازگشت به ACTIVE
 }
 
 // --- رشته‌ی تحصیلی (برای فیلتر مشاور ↔ دانش‌آموز) ---
@@ -152,6 +153,9 @@ model User {
   // توکن‌های بازنشانی رمز عبور (فراموشی رمز)
   passwordResets  PasswordReset[]
 
+  // رشته‌های تخصص مشاور (چندتا می‌تواند باشد) — فقط برای ADVISOR
+  advisorFields   AdvisorField[]
+
   @@index([instituteId])
 }
 
@@ -196,6 +200,22 @@ model AdvisorStudentLink {
   @@unique([advisorId, studentId])
   @@index([advisorId])
   @@index([studentId])
+}
+
+// رشته‌های تحصیلی که یک مشاور در آن‌ها تخصص دارد (می‌تواند چندتا باشد)
+// دانش‌آموز فقط یک رشته دارد (در User.field)؛ مشاور می‌تواند چند رشته داشته باشد.
+// منطق تطابق: رشته‌ی دانش‌آموز باید در لیست رشته‌های مشاور باشد.
+model AdvisorField {
+  id        String @id @default(cuid())
+  userId    String
+  field     Field
+  createdAt DateTime @default(now())
+
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, field])
+  @@index([userId])
+  @@index([field])
 }
 
 // تگ‌های درسی؛ یا پیش‌فرض و سراسری‌اند یا شخصی برای یک مشاور

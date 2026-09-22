@@ -12,6 +12,10 @@ const {
   deleteInstitute,
   updateInstituteSubscription,
   assignAdvisorToInstitute,
+  assignAdvisorFields,
+  deactivateAdvisor,
+  reactivateAdvisor,
+  deleteAdvisor,
   createUserOtp,
 } = require('../controllers/admin.controller');
 const { validate, schemas } = require('../utils/validators');
@@ -24,8 +28,16 @@ router.post('/advisors/:id/approve', approveAdvisor);
 router.post('/advisors/:id/reject', rejectAdvisor);
 router.get('/advisors/overview', listAdvisorsOverview);
 
-// تخصیص مشاور به مؤسسه‌ی خاص (یا جدا کردنش با instituteId=null)
+// تخصیص مشاور به مؤسسه (یا جدا کردنش با instituteId=null)
 router.put('/advisors/:id/institute', validate(schemas.assignInstitute), assignAdvisorToInstitute);
+
+// تخصیص/ویرایش رشته‌های تخصص مشاور
+router.put('/advisors/:id/fields', validate(schemas.assignAdvisorFields), assignAdvisorFields);
+
+// غیرفعال‌کردن / فعال‌کردن مجدد / حذف مشاور
+router.post('/advisors/:id/deactivate', deactivateAdvisor);
+router.post('/advisors/:id/reactivate', reactivateAdvisor);
+router.delete('/advisors/:id', deleteAdvisor);
 
 // ساخت رمز یک‌بار مصرف (OTP) برای کاربر — وقتی رمزش را فراموش کرده
 router.post('/users/:id/otp', validate(schemas.createOtp), createUserOtp);
