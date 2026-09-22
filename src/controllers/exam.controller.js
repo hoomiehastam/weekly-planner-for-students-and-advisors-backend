@@ -402,6 +402,8 @@ async function startExam(req, res, next) {
     }
 
     res.json({
+      // ساعت سرور برای همگام‌سازی شمارش معکوس در کلاینت (اختلاف ساعت سرور و کلاینت)
+      serverTime: new Date().toISOString(),
       submission,
       exam: {
         id: exam.id,
