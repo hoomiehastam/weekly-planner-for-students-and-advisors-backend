@@ -5,10 +5,13 @@ const { normalizePhone, normalizeBio, validatePassword } = require('../utils/nor
 
 const SALT_ROUNDS = 10;
 
-// ثبت‌نام کاربر جدید. دانش‌آموز بلافاصله فعال می‌شود، مشاور منتظر تایید سوپرادمین می‌ماند
+// ثبت‌نام کاربر جدید. دانش‌آموز بلافاصله فعال می‌شود، مشاور منتظر تأیید می‌ماند
+// (تأیید مشاورِ مؤسسه‌ای: مدیر مؤسسه — مشاور مستقل: سوپرادمین)
+// با کد مؤسسه (instituteCode) عضو مؤسسه می‌شوی؛ بدون کد مستقل می‌مانی.
+// قانون مرز tenant: مشاورِ انتخابی دانش‌آموز باید هم‌مؤسسه با او باشد یا هر دو مستقل.
 async function register(req, res, next) {
   try {
-    const { fullName, email, password, role, advisorId, phone, bio } = req.body;
+    const { fullName, email, password, role, advisorId, phone, bio, instituteCode } = req.body;
 
     if (!fullName || !email || !password || !role) {
       return res.status(400).json({ error: 'همه‌ی فیلدها الزامی هستند' });
@@ -35,7 +38,20 @@ async function register(req, res, next) {
       return res.status(400).json({ error: err.message });
     }
 
+    // عضویت اختیاری در مؤسسه با کد دعوت
+    let institute = null;
+    if (instituteCode) {
+      institute = await prisma.institute.findUnique({ where: { code: String(instituteCode).trim() } });
+      if (!institute) {
+        return res.status(400).json({ error: 'کد مؤسسه معتبر نیست' });
+      }
+      if (institute.status !== 'ACTIVE') {
+        return res.status(400).json({ error: 'این مؤسسه هنوز تأیید نشده است' });
+      }
+    }
+
     // دانش‌آموز باید حتماً یک مشاور فعال را انتخاب کند
+    // + قانون مرز مؤسسه: مشاور و دانش‌آموز باید هم‌مؤسسه باشند یا هر دو مستقل
     let advisor = null;
     if (role === 'STUDENT') {
       if (!advisorId) {
@@ -47,12 +63,22 @@ async function register(req, res, next) {
       if (!advisor) {
         return res.status(400).json({ error: 'مشاور انتخاب‌شده یافت نشد یا هنوز فعال نیست' });
       }
+      const advisorInst = advisor.instituteId;
+      const studentInst = institute ? institute.id : null;
+      if (advisorInst !== studentInst) {
+        return res.status(400).json({
+          error: institute
+            ? 'در ثبت‌نام مؤسسه‌ای باید از مشاوران همان مؤسسه انتخاب کنی'
+            : 'این مشاور عضو یک مؤسسه است؛ برای ثبت‌نام نزد او باید کد همان مؤسسه را وارد کنی',
+        });
+      }
     }
 
     const passwordHash = await bcrypt.hash(passwordValue, SALT_ROUNDS);
 
-    // دانش‌آموز بلافاصله فعال است، مشاور تا تایید سوپرادمین در وضعیت انتظار می‌ماند
-    const status = role === 'STUDENT' ? 'ACTIVE' : 'PENDING';
+    // دانش‌آموز مستقل بلافاصله فعال است؛ مشاور و اعضای مؤسسه در انتظار تأیید می‌مانند
+    // (تأیید اعضای مؤسسه با مدیر مؤسسه است، مستقل‌ها با سوپرادمین)
+    const status = role === 'STUDENT' && !institute ? 'ACTIVE' : 'PENDING';
 
     const user = await prisma.user.create({
       data: {
@@ -63,6 +89,7 @@ async function register(req, res, next) {
         status,
         phone: phoneValue,
         bio: bioValue,
+        instituteId: institute ? institute.id : null,
       },
     });
 
@@ -72,7 +99,7 @@ async function register(req, res, next) {
       });
     }
 
-    // فقط کاربر فعال بلافاصله توکن می‌گیرد؛ مشاور در انتظار باید صبر کند
+    // فقط کاربر فعال بلافاصله توکن می‌گیرد؛ بقیه باید تأیید شوند
     if (status === 'ACTIVE') {
       const token = generateToken(user);
       setTokenCookie(res, token);
@@ -83,7 +110,9 @@ async function register(req, res, next) {
     }
 
     return res.status(201).json({
-      message: 'ثبت‌نام ثبت شد. حساب شما پس از تایید سوپرادمین فعال می‌شود',
+      message: institute
+        ? 'ثبت‌نام ثبت شد. حساب شما پس از تأیید مدیر مؤسسه فعال می‌شود'
+        : 'ثبت‌نام ثبت شد. حساب شما پس از تأیید سوپرادمین فعال می‌شود',
     });
   } catch (err) {
     next(err);
@@ -110,7 +139,11 @@ async function login(req, res, next) {
     }
 
     if (user.status === 'PENDING') {
-      return res.status(403).json({ error: 'حساب شما هنوز توسط سوپرادمین تایید نشده است' });
+      return res.status(403).json({
+        error: user.instituteId
+          ? 'حساب شما هنوز توسط مدیر مؤسسه تأیید نشده است'
+          : 'حساب شما هنوز تأیید نشده است',
+      });
     }
 
     if (user.status === 'REJECTED') {

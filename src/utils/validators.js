@@ -24,6 +24,8 @@ const registerSchema = z.object({
   phone: optionalText(20),
   bio: optionalText(500),
   advisorId: z.string().uuid('شناسه‌ی مشاور نامعتبر است').optional(),
+  // کد دعوت مؤسسه — اختیاری؛ با این کد عضو مؤسسه می‌شوی
+  instituteCode: z.string().trim().min(1).max(20).optional(),
 });
 
 const loginSchema = z.object({

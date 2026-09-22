@@ -1,7 +1,10 @@
 const prisma = require('../config/prisma');
+const crypto = require('crypto');
 
 // فهرست مشاورانی که هنوز منتظر تایید هستند
 // شامل شماره تماس و توضیحات تا سوپرادمین با آگاهی کامل تصمیم بگیرد
+// اعضای مؤسسه هم با نام مؤسسه‌شان نشان داده می‌شوند (تأییدشان حق مدیر مؤسسه است،
+// ولی سوپرادمین همیشه override دارد)
 async function listPendingAdvisors(req, res, next) {
   try {
     const advisors = await prisma.user.findMany({
@@ -13,10 +16,89 @@ async function listPendingAdvisors(req, res, next) {
         phone: true,
         bio: true,
         createdAt: true,
+        institute: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'asc' },
     });
     res.json({ advisors });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ====== مدیریت مؤسسه‌ها (سوپرادمین) ======
+
+// ثبت مؤسسه‌ی جدید — سوپرادمین دستی می‌سازد (فروش B2B؛ ثبت‌نام عمومی مؤسسه فعلاً نیست)
+// کد دعوت خودکار تولید می‌شود تا مدیر مؤسسه در ثبت‌نام اعضا بدهد
+async function createInstitute(req, res, next) {
+  try {
+    const { name } = req.body;
+    const trimmed = String(name || '').trim();
+    if (trimmed.length < 2) {
+      return res.status(400).json({ error: 'نام مؤسسه باید حداقل ۲ کاراکتر باشد' });
+    }
+
+    // کد ۸ کاراکتری بدون حروف گیج‌کننده (0/O/1/I)
+    const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    const code = Array.from(crypto.randomBytes(8))
+      .map((b) => alphabet[b % alphabet.length])
+      .join('')
+      .slice(0, 8);
+
+    const institute = await prisma.institute.create({
+      data: { name: trimmed, code },
+    });
+    res.status(201).json({ message: 'مؤسسه ساخته شد', institute });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// فهرست مؤسسه‌ها + شمارنده‌ها + اشتراک
+async function listInstitutes(req, res, next) {
+  try {
+    const institutes = await prisma.institute.findMany({
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        status: true,
+        createdAt: true,
+        subscription: { select: { status: true, tier: true, endsAt: true } },
+        _count: { select: { members: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({ institutes });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// تأیید مؤسسه (پس از ثبت + در صورت نیاز پس از پرداخت)
+async function activateInstitute(req, res, next) {
+  try {
+    const { id } = req.params;
+    const institute = await prisma.institute.findUnique({ where: { id } });
+    if (!institute) {
+      return res.status(404).json({ error: 'مؤسسه یافت نشد' });
+    }
+    // فعال‌سازی + آغاز دوره‌ی آزمایشی ۱۴ روزه در یک تراکنش
+    const updated = prisma.institute.update({
+      where: { id },
+      data: { status: 'ACTIVE' },
+    });
+    const sub = prisma.instituteSubscription.upsert({
+      where: { instituteId: id },
+      create: {
+        instituteId: id,
+        status: 'TRIAL',
+        endsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+      },
+      update: { status: 'ACTIVE' },
+    });
+    await prisma.$transaction([updated, sub]);
+    res.json({ message: 'مؤسسه فعال شد', institute: { id, status: 'ACTIVE' } });
   } catch (err) {
     next(err);
   }
@@ -97,4 +179,12 @@ async function listAdvisorsOverview(req, res, next) {
   }
 }
 
-module.exports = { listPendingAdvisors, approveAdvisor, rejectAdvisor, listAdvisorsOverview };
+module.exports = {
+  listPendingAdvisors,
+  approveAdvisor,
+  rejectAdvisor,
+  listAdvisorsOverview,
+  createInstitute,
+  listInstitutes,
+  activateInstitute,
+};

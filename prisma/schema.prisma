@@ -15,12 +15,51 @@ enum UserRole {
   STUDENT
   ADVISOR
   SUPERADMIN
+  INSTITUTE_MANAGER // مدیر مؤسسه — فقط داده‌های مؤسسه‌ی خودش را می‌بیند (خواندنی + تأیید اعضا)
 }
 
 enum UserStatus {
   PENDING
   ACTIVE
   REJECTED
+}
+
+// مؤسسه‌ی آموزشی (آزمون‌ساز کنکور/آموزشگاه)
+// اعضا (مشاور/دانش‌آموز/مدیر) با instituteId روی User به آن وصل می‌شوند.
+// invariant مهم: null یعنی مستقل؛ لینک مشاور–دانش‌آموز هرگز از مرز مؤسسه عبور نمی‌کند
+// (هر دو طرف عضو یک مؤسسه، یا هر دو null — در کنترلرهای ساخت لینک اعمال می‌شود).
+model Institute {
+  id        String     @id @default(cuid())
+  name      String
+  // کد دعوت یکتا — ثبت‌نام با این کد عضویت در مؤسسه می‌دهد و درخواست تأیید
+  // به مدیر مؤسسه می‌رود (به‌جای سوپرادمین)
+  code      String     @unique
+  // مؤسسه هم مثل مشاور توسط سوپرادمین تأیید می‌شود
+  status    UserStatus @default(PENDING)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  members   User[]
+  subscription InstituteSubscription?
+}
+
+// پیوند اشتراک ماهانه‌ی مؤسسه — خود مؤسسه پرداخت می‌کند، نه اعضا
+model InstituteSubscription {
+  id          String   @id @default(cuid())
+  // یک‌به‌یک: هر مؤسسه در هر لحظه یک اشتراک جاری دارد (تاریخچه در paymentEvents)
+  instituteId String   @unique
+  tier        String   @default("STANDARD")
+  status      String   @default("TRIAL") // TRIAL | ACTIVE | GRACE | EXPIRED
+  startsAt    DateTime @default(now())
+  endsAt      DateTime
+  // ردپای پرداخت/تمدید دستی (درگاه بانکی + ویرایش سوپرادمین)
+  lastPaymentRef String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  institute Institute @relation(fields: [instituteId], references: [id], onDelete: Cascade)
+
+  @@index([instituteId])
 }
 
 // --- وضعیت انجام یک آیتم درسی در طول هفته ---
@@ -50,6 +89,10 @@ model User {
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
+  // عضویت اختیاری در مؤسسه — null یعنی کاربر مستقل
+  instituteId String?
+  institute   Institute? @relation(fields: [instituteId], references: [id], onDelete: SetNull)
+
   // روابط مشاور ↔ دانش‌آموز
   asAdvisorLinks  AdvisorStudentLink[] @relation("AdvisorSide")
   asStudentLinks  AdvisorStudentLink[] @relation("StudentSide")
@@ -72,6 +115,8 @@ model User {
   examsAssigned   Exam[]  @relation("ExamStudent")
   // ارسال‌های آزمون دانش‌آموز
   examSubmissions ExamSubmission[] @relation("ExamSubmissionStudent")
+
+  @@index([instituteId])
 }
 
 // اتصال یک به چند بین مشاور و دانش‌آموز؛ دانش‌آموز فقط یک مشاور دارد

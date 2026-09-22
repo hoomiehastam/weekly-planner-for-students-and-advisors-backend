@@ -39,4 +39,18 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { authenticate, requireRole };
+// میان‌افزار مدیر مؤسسه: نقش را چک می‌کند و instituteId را از رکورد کاربر
+// (نه از کلاینت!) روی req می‌گذارد — همه‌ی کوئری‌های مدیر باید با همین اسکوپ شوند.
+// مدیریت نهایی: findFirst با { id, instituteId } تا شناسه‌های حدسی چیزی لو ندهند.
+async function requireInstituteManager(req, res, next) {
+  if (!req.user || req.user.role !== 'INSTITUTE_MANAGER') {
+    return res.status(403).json({ error: 'دسترسی مجاز نیست' });
+  }
+  if (!req.user.instituteId) {
+    return res.status(403).json({ error: 'شما به هیچ مؤسه‌ای متصل نیستید' });
+  }
+  req.instituteId = req.user.instituteId;
+  next();
+}
+
+module.exports = { authenticate, requireRole, requireInstituteManager };
