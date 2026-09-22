@@ -9,13 +9,20 @@ const SALT_ROUNDS = 10;
 const RESET_TOKEN_BYTES = 32;
 const RESET_TOKEN_EXPIRY_HOURS = 1;
 
-// ثبت‌نام کاربر جدید. دانش‌آموز بلافاصله فعال می‌شود، مشاور منتظر تأیید می‌ماند
-// (تأیید مشاورِ مؤسسه‌ای: مدیر مؤسسه — مشاور مستقل: سوپرادمین)
-// با کد مؤسسه (instituteCode) عضو مؤسسه می‌شوی؛ بدون کد مستقل می‌مانی.
-// قانون مرز tenant: مشاورِ انتخابی دانش‌آموز باید هم‌مؤسسه با او باشد یا هر دو مستقل.
+// ثبت‌نام کاربر جدید.
+//   دانش‌آموز مستقل: بلافاصله ACTIVE ولی link با مشاور PENDING (مشاور باید تأیید کند)
+//   دانش‌آموز مؤسسه‌ای: PENDING تا مدیر مؤسسه تأیید کند
+//   مشاور مستقل: PENDING تا سوپرادمین تأیید کند
+//   مشاور مؤسسه‌ای: PENDING تا مدیر مؤسسه تأیید کند
+//
+// تغییرات مهم در این نسخه:
+//   ۱) رشته‌ی تحصیلی (field) برای دانش‌آموز و مشاور الزامی است
+//   ۲) instituteId به‌جای instituteCode پذیرفته می‌شود (instituteCode هم هنوز کار می‌کند برای مهاجرت)
+//   ۳) link مشاور ↔ دانش‌آموز با status=PENDING ساخته می‌شود — مشاور باید تأیید کند
+//   ۴) مرز tenant همچنان حفظ می‌شود: مشاور و دانش‌آموز باید هم‌مؤسسه باشند یا هر دو مستقل
 async function register(req, res, next) {
   try {
-    const { fullName, email, password, role, advisorId, phone, bio, instituteCode } = req.body;
+    const { fullName, email, password, role, advisorId, phone, bio, field, instituteId, instituteCode } = req.body;
 
     if (!fullName || !email || !password || !role) {
       return res.status(400).json({ error: 'همه‌ی فیلدها الزامی هستند' });
@@ -23,6 +30,11 @@ async function register(req, res, next) {
 
     if (!['STUDENT', 'ADVISOR'].includes(role)) {
       return res.status(400).json({ error: 'نقش انتخاب‌شده معتبر نیست' });
+    }
+
+    // رشته‌ی تحصیلی برای دانش‌آموز و مشاور الزامی است
+    if (!field || !['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'].includes(field)) {
+      return res.status(400).json({ error: 'انتخاب رشته‌ی تحصیلی الزامی است' });
     }
 
     const existing = await prisma.user.findUnique({ where: { email } });
@@ -42,20 +54,27 @@ async function register(req, res, next) {
       return res.status(400).json({ error: err.message });
     }
 
-    // عضویت اختیاری در مؤسسه با کد دعوت
+    // عضویت اختیاری در مؤسسه
+    // instituteId اولویت دارد؛ اگر نبود instituteCode را امتحان می‌کنیم (برای backward compatibility)
     let institute = null;
-    if (instituteCode) {
+    if (instituteId) {
+      institute = await prisma.institute.findUnique({ where: { id: instituteId } });
+      if (!institute) {
+        return res.status(400).json({ error: 'مؤسسه‌ی انتخاب‌شده یافت نشد' });
+      }
+    } else if (instituteCode) {
       institute = await prisma.institute.findUnique({ where: { code: String(instituteCode).trim() } });
       if (!institute) {
         return res.status(400).json({ error: 'کد مؤسسه معتبر نیست' });
       }
-      if (institute.status !== 'ACTIVE') {
-        return res.status(400).json({ error: 'این مؤسسه هنوز تأیید نشده است' });
-      }
+    }
+    if (institute && institute.status !== 'ACTIVE') {
+      return res.status(400).json({ error: 'این مؤسسه هنوز تأیید نشده است' });
     }
 
     // دانش‌آموز باید حتماً یک مشاور فعال را انتخاب کند
     // + قانون مرز مؤسسه: مشاور و دانش‌آموز باید هم‌مؤسسه باشند یا هر دو مستقل
+    // + در حالت جدید، link با status=PENDING ساخته می‌شود — مشاور باید تأیید کند
     let advisor = null;
     if (role === 'STUDENT') {
       if (!advisorId) {
@@ -73,15 +92,17 @@ async function register(req, res, next) {
         return res.status(400).json({
           error: institute
             ? 'در ثبت‌نام مؤسسه‌ای باید از مشاوران همان مؤسسه انتخاب کنی'
-            : 'این مشاور عضو یک مؤسسه است؛ برای ثبت‌نام نزد او باید کد همان مؤسسه را وارد کنی',
+            : 'این مشاور عضو یک مؤسسه است؛ برای ثبت‌نام نزد او باید عضو همان مؤسسه باشی',
         });
       }
     }
 
     const passwordHash = await bcrypt.hash(passwordValue, SALT_ROUNDS);
 
-    // دانش‌آموز مستقل بلافاصله فعال است؛ مشاور و اعضای مؤسسه در انتظار تأیید می‌مانند
-    // (تأیید اعضای مؤسسه با مدیر مؤسسه است، مستقل‌ها با سوپرادمین)
+    // وضعیت کاربر (مستقل از وضعیت link):
+    //   - دانش‌آموز مستقل: ACTIVE (می‌تواند وارد شود، ولی link PENDING است تا مشاور تأیید کند)
+    //   - دانش‌آموز مؤسسه‌ای: PENDING (مدیر مؤسسه باید تأیید کند)
+    //   - مشاور (مستقل یا مؤسسه‌ای): PENDING
     const status = role === 'STUDENT' && !institute ? 'ACTIVE' : 'PENDING';
 
     const user = await prisma.user.create({
@@ -93,13 +114,15 @@ async function register(req, res, next) {
         status,
         phone: phoneValue,
         bio: bioValue,
+        field,
         instituteId: institute ? institute.id : null,
       },
     });
 
     if (role === 'STUDENT') {
+      // link با status=PENDING ساخته می‌شود — مشاور در پنلش درخواست را می‌بیند و تصمیم می‌گیرد
       await prisma.advisorStudentLink.create({
-        data: { advisorId: advisor.id, studentId: user.id },
+        data: { advisorId: advisor.id, studentId: user.id, status: 'PENDING' },
       });
     }
 
@@ -108,8 +131,10 @@ async function register(req, res, next) {
       const token = generateToken(user);
       setTokenCookie(res, token);
       return res.status(201).json({
-        message: 'ثبت‌نام با موفقیت انجام شد',
-        user: { id: user.id, fullName: user.fullName, role: user.role },
+        message: role === 'STUDENT'
+          ? 'ثبت‌نام با موفقیت انجام شد. درخواست اتصال به مشاور ارسال شد — بعد از تأیید مشاور، به برنامه‌ی هفتگی دسترسی خواهی داشت.'
+          : 'ثبت‌نام با موفقیت انجام شد',
+        user: { id: user.id, fullName: user.fullName, role: user.role, field: user.field },
       });
     }
 
@@ -161,6 +186,7 @@ async function login(req, res, next) {
 
         const token = generateToken(user);
         setTokenCookie(res, token);
+        // اگر mustChangePassword=true باشد، فرانت کاربر را به /change-password هدایت می‌کند
         return res.json({
           user: {
             id: user.id,
@@ -168,7 +194,7 @@ async function login(req, res, next) {
             role: user.role,
             phone: user.phone,
             bio: user.bio,
-            mustChangePassword: true, // یادآوری به کاربر که رمزش را عوض کند
+            mustChangePassword: user.mustChangePassword === true,
           },
         });
       }
@@ -182,6 +208,16 @@ async function login(req, res, next) {
     }
 
     // ۲) مسیر عادی: بررسی رمز عبور
+    // نکته‌ی مهم: اگر mustChangePassword=true باشد، یعنی سوپرادمین قبلاً OTP ساخته
+    // و رمز قبلی بی‌اعتبار شده. در این حالت حتی اگر کاربر رمز قبلی را به‌خاطر بیاورد،
+    // نباید بتواند وارد شود — باید از سوپرادمین OTP جدید بگیرد.
+    if (user.mustChangePassword === true) {
+      return res.status(403).json({
+        error: 'رمز عبور شما توسط سوپرادمین بازنشانی شده. برای ورود، از او یک رمز یک‌بار مصرف (OTP) جدید بگیرید.',
+        mustChangePassword: true,
+      });
+    }
+
     const passwordMatches = await bcrypt.compare(password, user.passwordHash);
     if (!passwordMatches) {
       return res.status(401).json({ error: 'ایمیل یا رمز عبور اشتباه است' });
@@ -208,6 +244,7 @@ async function login(req, res, next) {
         role: user.role,
         phone: user.phone,
         bio: user.bio,
+        mustChangePassword: false,
       },
     });
   } catch (err) {
@@ -231,6 +268,9 @@ async function getMe(req, res) {
       role: req.user.role,
       phone: req.user.phone,
       bio: req.user.bio,
+      field: req.user.field,
+      // برای اینکه فرانت بداند آیا باید صفحه‌ی تغییر رمز اجباری را نشان دهد یا خیر
+      mustChangePassword: req.user.mustChangePassword === true,
     },
   });
 }
@@ -309,7 +349,8 @@ async function updateMyProfile(req, res, next) {
 }
 
 // تغییر رمز عبور خود توسط کاربر لاگین‌شده
-// کاربرد: بعد از ورود با OTP، کاربر باید رمزش را عوض کند
+// کاربرد ۱: بعد از ورود با OTP، کاربر مجبور است رمزش را عوض کند (mustChangePassword=true)
+// کاربرد ۲: تغییر داوطلبانه‌ی رمز توسط کاربر (نیاز به currentPassword دارد)
 async function changeMyPassword(req, res, next) {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -329,9 +370,16 @@ async function changeMyPassword(req, res, next) {
       return res.status(404).json({ error: 'کاربر یافت نشد' });
     }
 
-    // اگر کاربر currentPassword فرستاده، آن را بررسی می‌کنیم (برای تغییر عادی رمز)
-    // اگر نفرستاده (مثلاً بعد از ورود با OTP)، فقط رمز جدید را تنظیم می‌کنیم
-    if (currentPassword) {
+    // دو حالت داریم:
+    //   ۱) حالت اجباری (mustChangePassword=true): کاربر با OTP وارد شده، هویتش تأیید شده.
+    //      نیازی به currentPassword نیست. فقط رمز جدید را تنظیم می‌کنیم.
+    //   ۲) حالت داوطلبانه: کاربر می‌خواهد رمزش را عوض کند. باید currentPassword بفرستد
+    //      و با passwordHash فعلی مطابقت داشته باشد.
+    if (!user.mustChangePassword) {
+      // حالت داوطلبانه — currentPassword الزامی است
+      if (!currentPassword) {
+        return res.status(400).json({ error: 'رمز عبور فعلی الزامی است' });
+      }
       const matches = await bcrypt.compare(currentPassword, user.passwordHash);
       if (!matches) {
         return res.status(400).json({ error: 'رمز عبور فعلی اشتباه است' });
@@ -339,9 +387,15 @@ async function changeMyPassword(req, res, next) {
     }
 
     const passwordHash = await bcrypt.hash(passwordValue, SALT_ROUNDS);
+    // پاک‌سازی mustChangePassword و otpHash بعد از تعیین رمز جدید
     await prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash, otpHash: null, otpExpiresAt: null },
+      data: {
+        passwordHash,
+        otpHash: null,
+        otpExpiresAt: null,
+        mustChangePassword: false,
+      },
     });
 
     res.json({ message: 'رمز عبور با موفقیت تغییر کرد' });

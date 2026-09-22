@@ -179,12 +179,13 @@ async function createPlan(req, res, next) {
       return res.status(400).json({ error: 'شناسه‌ی دانش‌آموز، عنوان و تاریخ شروع الزامی هستند' });
     }
 
-    // اطمینان از اینکه این دانش‌آموز واقعاً به این مشاور متصل است
+    // اطمینان از اینکه این دانش‌آموز واقعاً به این مشاور متصل است و link فعال است
+    // (PENDING نباید بتواند برنامه بسازد — مشاور هنوز تأیید نکرده)
     const link = await prisma.advisorStudentLink.findFirst({
-      where: { advisorId: req.user.id, studentId },
+      where: { advisorId: req.user.id, studentId, status: 'ACTIVE' },
     });
     if (!link) {
-      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست' });
+      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست یا هنوز تأیید نکرده‌اید' });
     }
 
     // اعتبارسنجی تگ‌ها قبل از ساخت

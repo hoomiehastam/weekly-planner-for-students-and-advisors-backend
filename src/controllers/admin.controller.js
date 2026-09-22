@@ -329,6 +329,11 @@ async function assignAdvisorToInstitute(req, res, next) {
 // سوپرادمین وقتی کاربر رمزش را فراموش کرده، یک OTP می‌سازد و به کاربر می‌دهد.
 // کاربر با ایمیل + OTP وارد می‌شود. OTP فقط یک بار کار می‌کند و بعد پاک می‌شود.
 // طول عمر پیش‌فرض ۲۴ ساعت است (با ttlHours قابل تنظیم).
+//
+// نکته‌ی مهم: وقتی OTP ساخته می‌شود:
+//   1) mustChangePassword=true می‌شود → کاربر باید بعد از ورود رمز جدید بگذارد
+//   2) passwordHash قبلی با یک هش تصادفی جایگزین می‌شود → رمز قبلی دیگر کار نمی‌کند
+//      (چون کاربر گفت رمزش را فراموش کرده، منطقی است که رمز قبلی دیگر معتبر نباشد)
 async function createUserOtp(req, res, next) {
   try {
     const { id } = req.params;
@@ -350,18 +355,28 @@ async function createUserOtp(req, res, next) {
     const ttl = ttlHours || OTP_TTL_HOURS_DEFAULT;
     const otpExpiresAt = new Date(Date.now() + ttl * 60 * 60 * 1000);
 
+    // رمز قبلی را بی‌اعتبار می‌کنیم با جایگزینی passwordHash با یک هش تصادفی غیرقابل حدس.
+    // اینطوری حتی اگر کاربر رمز قبلیش را به یاد بیاورد، با آن نمی‌تواند وارد شود.
+    const randomInvalidator = crypto.randomBytes(32).toString('hex');
+    const invalidatedPasswordHash = await bcrypt.hash(randomInvalidator, SALT_ROUNDS);
+
     await prisma.user.update({
       where: { id },
-      data: { otpHash, otpExpiresAt },
+      data: {
+        otpHash,
+        otpExpiresAt,
+        mustChangePassword: true,
+        passwordHash: invalidatedPasswordHash,
+      },
     });
 
     res.json({
-      message: 'رمز یک‌بار مصرف ساخته شد. آن را به کاربر بدهید.',
+      message: 'رمز یک‌بار مصرف ساخته شد. رمز قبلی کاربر بی‌اعتبار شد. آن را به کاربر بدهید.',
       otp,
       expiresAt: otpExpiresAt,
       ttlHours: ttl,
       // اطلاع‌رسانی به ادمین که کاربر باید بعد از ورود رمزش را عوض کند
-      note: 'این رمز فقط یک بار قابل استفاده است. کاربر باید بعد از ورود، رمز عبور جدیدی تعیین کند.',
+      note: 'این رمز فقط یک بار قابل استفاده است. کاربر باید بعد از ورود، رمز عبور جدیدی تعیین کند — رمز قبلی دیگر کار نمی‌کند.',
     });
   } catch (err) {
     next(err);

@@ -19,7 +19,7 @@
     "db:seed": "node prisma/seed.js"
   },
   "dependencies": {
-    "@prisma/client": "^5.20.0",
+    "@prisma/client": "^5.22.0",
     "bcrypt": "^5.1.1",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
@@ -35,6 +35,6 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "prisma": "^5.20.0"
+    "prisma": "^5.22.0"
   }
 }

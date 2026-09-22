@@ -44,21 +44,21 @@ async function createExam(req, res, next) {
         return res.status(400).json({ error: 'دانش‌آموزهای تکراری در لیست وجود دارد' });
       }
       links = await prisma.advisorStudentLink.findMany({
-        where: { advisorId: req.user.id, studentId: { in: studentIds } },
+        where: { advisorId: req.user.id, studentId: { in: studentIds }, status: 'ACTIVE' },
       });
       const linkedIds = new Set(links.map((l) => l.studentId));
       const missing = studentIds.filter((sid) => !linkedIds.has(sid));
       if (missing.length > 0) {
         return res
           .status(403)
-          .json({ error: 'برخی از دانش‌آموزهای انتخاب‌شده به شما متصل نیستند' });
+          .json({ error: 'برخی از دانش‌آموزهای انتخاب‌شده به شما متصل نیستند یا هنوز تأیید نکرده‌اید' });
       }
     } else {
       const link = await prisma.advisorStudentLink.findFirst({
-        where: { advisorId: req.user.id, studentId },
+        where: { advisorId: req.user.id, studentId, status: 'ACTIVE' },
       });
       if (!link) {
-        return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست' });
+        return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست یا هنوز تأیید نکرده‌اید' });
       }
     }
 
@@ -227,10 +227,10 @@ async function getExamsForStudent(req, res, next) {
     const { studentId } = req.params;
 
     const link = await prisma.advisorStudentLink.findFirst({
-      where: { advisorId: req.user.id, studentId },
+      where: { advisorId: req.user.id, studentId, status: 'ACTIVE' },
     });
     if (!link) {
-      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست' });
+      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست یا هنوز تأیید نکرده‌اید' });
     }
 
     const where = { studentId };

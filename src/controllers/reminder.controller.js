@@ -10,10 +10,10 @@ async function sendReminder(req, res, next) {
     }
 
     const link = await prisma.advisorStudentLink.findFirst({
-      where: { advisorId: req.user.id, studentId },
+      where: { advisorId: req.user.id, studentId, status: 'ACTIVE' },
     });
     if (!link) {
-      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست' });
+      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست یا هنوز تأیید نکرده‌اید' });
     }
 
     const reminder = await prisma.reminder.create({
@@ -45,10 +45,10 @@ async function getRemindersForStudent(req, res, next) {
     const { studentId } = req.params;
 
     const link = await prisma.advisorStudentLink.findFirst({
-      where: { advisorId: req.user.id, studentId },
+      where: { advisorId: req.user.id, studentId, status: 'ACTIVE' },
     });
     if (!link) {
-      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست' });
+      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست یا هنوز تأیید نکرده‌اید' });
     }
 
     const reminders = await prisma.reminder.findMany({

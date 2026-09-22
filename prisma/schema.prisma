@@ -24,6 +24,22 @@ enum UserStatus {
   REJECTED
 }
 
+// --- رشته‌ی تحصیلی (برای فیلتر مشاور ↔ دانش‌آموز) ---
+enum Field {
+  HUMANITIES    // علوم انسانی
+  MATH_PHYSICS  // ریاضی و فیزیک
+  EXPERIMENTAL  // علوم تجربی
+}
+
+// --- وضعیت اتصال مشاور ↔ دانش‌آموز ---
+// دانش‌آموز ثبت‌نام می‌کند → link با PENDING ساخته می‌شود → مشاور ACCEPT یا REJECT می‌کند
+// تا زمانی که link فعال نشود، مشاور نمی‌تواند برای دانش‌آموز برنامه/آزمون/یادآور بسازد
+enum AdvisorLinkStatus {
+  PENDING
+  ACTIVE
+  REJECTED
+}
+
 // مؤسسه‌ی آموزشی (آزمون‌ساز کنکور/آموزشگاه)
 // اعضا (مشاور/دانش‌آموز/مدیر) با instituteId روی User به آن وصل می‌شوند.
 // invariant مهم: null یعنی مستقل؛ لینک مشاور–دانش‌آموز هرگز از مرز مؤسسه عبور نمی‌کند
@@ -98,6 +114,18 @@ model User {
   otpHash        String?
   otpExpiresAt   DateTime?
 
+  // --- اجبار به تغییر رمز بعد از ورود با OTP ---
+  // وقتی سوپرادمین OTP می‌سازد: mustChangePassword=true می‌شود و passwordHash قبلی بی‌اعتبار می‌شود.
+  // کاربر فقط با OTP می‌تواند وارد شود. بعد از تعیین رمز جدید، این فیلد false می‌شود.
+  mustChangePassword Boolean @default(false)
+
+  // --- رشته‌ی تحصیلی کاربر ---
+  // برای مشاور: رشته‌ای که در آن تخصص دارد و به دانش‌آموزان آن رشته مشاوره می‌دهد
+  // برای دانش‌آموز: رشته‌ی کنکوری او
+  // سوپرادمین و مدیر مؤسسه معمولاً null دارند
+  // در ثبت‌نام دانش‌آموز و مشاور، این فیلد انتخاب می‌شود
+  field Field?
+
   // روابط مشاور ↔ دانش‌آموز
   asAdvisorLinks  AdvisorStudentLink[] @relation("AdvisorSide")
   asStudentLinks  AdvisorStudentLink[] @relation("StudentSide")
@@ -155,6 +183,12 @@ model AdvisorStudentLink {
   // هدف ساعت مطالعه‌ی هفتگی که مشاور برای این دانش‌آموز تعیین می‌کند (به دقیقه)
   // null یعنی هنوز هدفی تعیین نشده
   weeklyGoalMinutes Int?
+
+  // وضعیت اتصال:
+  //   PENDING  — دانش‌آموز درخواست داده، مشاور هنوز تصمیم نگرفته
+  //   ACTIVE   — مشاور پذیرفته، می‌تواند برنامه/آزمون/یادآور بسازد
+  //   REJECTED — مشاور رد کرده، دانش‌آموز باید مشاور دیگری انتخاب کند
+  status    AdvisorLinkStatus @default(PENDING)
 
   advisor   User     @relation("AdvisorSide",  fields: [advisorId],  references: [id], onDelete: Cascade)
   student   User     @relation("StudentSide", fields: [studentId], references: [id], onDelete: Cascade)

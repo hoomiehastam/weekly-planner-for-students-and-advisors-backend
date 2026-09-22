@@ -1,11 +1,11 @@
 const prisma = require('../config/prisma');
 
-// فهرست دانش‌آموزهایی که به همین مشاور متصل هستند
-// شامل شماره تماس و توضیحات دانش‌آموز تا مشاور بتواند با او ارتباط برقرار کند
+// فهرست دانش‌آموزهایی که به همین مشاور متصل هستند (PENDING یا ACTIVE)
+// شامل شماره تماس، توضیحات، رشته و وضعیت اتصال
 async function listMyStudents(req, res, next) {
   try {
     const links = await prisma.advisorStudentLink.findMany({
-      where: { advisorId: req.user.id },
+      where: { advisorId: req.user.id, status: { in: ['PENDING', 'ACTIVE'] } },
       include: {
         student: {
           select: {
@@ -14,14 +14,20 @@ async function listMyStudents(req, res, next) {
             email: true,
             phone: true,
             bio: true,
+            field: true,
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [
+        // اول PENDING ها (نیاز به تصمیم‌گیری)، بعد ACTIVE ها
+        { status: 'asc' },
+        { createdAt: 'desc' },
+      ],
     });
-    // هدف هفتگی هم در پاسخ برمی‌گردد تا فرانت‌اند بلافاصله نمایش دهد
     const students = links.map((link) => ({
       ...link.student,
+      linkId: link.id,
+      linkStatus: link.status,
       weeklyGoalMinutes: link.weeklyGoalMinutes,
     }));
     res.json({ students });
@@ -31,19 +37,24 @@ async function listMyStudents(req, res, next) {
 }
 
 // دریافت هدف هفتگی دانش‌آموز (برای خودش)
+// حتی اگر link هنوز PENDING است، هدف را برمی‌گرداند (البته مشاور هنوز فرصت تنظیم نداشته)
 async function getMyWeeklyGoal(req, res, next) {
   try {
     const link = await prisma.advisorStudentLink.findFirst({
-      where: { studentId: req.user.id },
-      select: { weeklyGoalMinutes: true },
+      where: { studentId: req.user.id, status: { in: ['PENDING', 'ACTIVE', 'REJECTED'] } },
+      select: { weeklyGoalMinutes: true, status: true },
     });
-    res.json({ weeklyGoalMinutes: link?.weeklyGoalMinutes || null });
+    res.json({
+      weeklyGoalMinutes: link?.weeklyGoalMinutes || null,
+      linkStatus: link?.status || null,
+    });
   } catch (err) {
     next(err);
   }
 }
 
 // مشاور هدف هفتگی را برای یکی از دانش‌آموزهای خودش تنظیم می‌کند
+// نکته: فقط لینک‌های ACTIVE قابل تنظیم هدف هستند (PENDING نباید هدف بگیرد)
 async function setStudentWeeklyGoal(req, res, next) {
   try {
     const { studentId } = req.params;
@@ -60,10 +71,10 @@ async function setStudentWeeklyGoal(req, res, next) {
     }
 
     const link = await prisma.advisorStudentLink.findFirst({
-      where: { advisorId: req.user.id, studentId },
+      where: { advisorId: req.user.id, studentId, status: 'ACTIVE' },
     });
     if (!link) {
-      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست' });
+      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست یا هنوز تأیید نشده' });
     }
 
     await prisma.advisorStudentLink.update({
@@ -77,12 +88,13 @@ async function setStudentWeeklyGoal(req, res, next) {
   }
 }
 
-// دریافت اطلاعات مشاور دانش‌آموز (نام، ایمیل، شماره تماس، توضیحات)
-// تا دانش‌آموز بتواند با مشاورش ارتباط برقرار کند
+// دریافت اطلاعات مشاور دانش‌آموز (نام، ایمیل، شماره تماس، توضیحات، رشته)
+// حتی اگر link هنوز PENDING است، اطلاعات مشاور را برمی‌گرداند تا دانش‌آموز بداند چه کسی باید تأییدش کند.
+// در فرانت، وضعیت link نشان داده می‌شود.
 async function getMyAdvisor(req, res, next) {
   try {
     const link = await prisma.advisorStudentLink.findFirst({
-      where: { studentId: req.user.id },
+      where: { studentId: req.user.id, status: { in: ['PENDING', 'ACTIVE', 'REJECTED'] } },
       include: {
         advisor: {
           select: {
@@ -91,6 +103,7 @@ async function getMyAdvisor(req, res, next) {
             email: true,
             phone: true,
             bio: true,
+            field: true,
           },
         },
       },
@@ -98,7 +111,11 @@ async function getMyAdvisor(req, res, next) {
     if (!link) {
       return res.status(404).json({ error: 'هنوز مشاوری به شما متصل نشده' });
     }
-    res.json({ advisor: link.advisor });
+    res.json({
+      advisor: link.advisor,
+      linkStatus: link.status,
+      linkCreatedAt: link.createdAt,
+    });
   } catch (err) {
     next(err);
   }

@@ -24,7 +24,14 @@ const registerSchema = z.object({
   phone: optionalText(20),
   bio: optionalText(500),
   advisorId: z.string().uuid('شناسه‌ی مشاور نامعتبر است').optional(),
-  // کد دعوت مؤسسه — اختیاری؛ با این کد عضو مؤسسه می‌شوی
+  // رشته‌ی تحصیلی — برای دانش‌آموز و مشاور الزامی است
+  field: z.enum(['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'], {
+    errorMap: () => ({ message: 'رشته باید یکی از HUMANITIES، MATH_PHYSICS یا EXPERIMENTAL باشد' }),
+  }),
+  // برای ثبت‌نام مؤسسه‌ای: شناسه‌ی مؤسسه (به‌جای کد دعوت)
+  // اگر ارسال شود، درخواست عضویت PENDING به مدیر مؤسسه می‌رود
+  instituteId: z.string().cuid('شناسه‌ی مؤسسه نامعتبر است').optional().nullable(),
+  // هنوز instituteCode هم قبول می‌کنیم برای backward compatibility (مهاجرت ملایم)
   instituteCode: z.string().trim().min(1).max(20).optional(),
 });
 
