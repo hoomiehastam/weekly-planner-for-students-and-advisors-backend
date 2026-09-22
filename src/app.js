@@ -41,6 +41,18 @@ app.use(
   })
 );
 
+// محدودیت شدیدتر روی درخواست بازیابی رمز عبور — جلوگیری از spam ایمیل
+app.use(
+  '/api/auth/forgot-password',
+  rateLimit({
+    windowMs: 60 * 60 * 1000, // ۱ ساعت
+    limit: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'تعداد درخواست‌های بازیابی رمز عبور بیش از حد مجاز است؛ بعداً تلاش کنید' },
+  })
+);
+
 // محدودیت حجم بدنه‌ی درخواست — عکس‌های base64 سؤالات آزمون می‌توانند حجیم باشند
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());

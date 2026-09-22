@@ -33,6 +33,37 @@ const loginSchema = z.object({
   password: z.string().min(1, 'رمز عبور الزامی است'),
 });
 
+// درخواست بازنشانی رمز عبور — فقط ایمیل لازم است
+const forgotPasswordSchema = z.object({
+  email: emailSchema,
+});
+
+// تنظیم رمز عبور جدید با توکن بازیابی
+const resetPasswordSchema = z.object({
+  token: z.string().trim().min(1, 'توکن الزامی است'),
+  newPassword: passwordSchema,
+});
+
+// تنظیم مدت اشتراک مؤسسه توسط سوپرادمین — تعداد روز + وضعیت
+const updateInstituteSubscriptionSchema = z.object({
+  endsAt: z.string().datetime({ message: 'تاریخ پایان نامعتبر است' }).optional(),
+  daysFromNow: z.number().int().min(1).max(3650).optional(),
+  status: z.enum(['TRIAL', 'ACTIVE', 'GRACE', 'EXPIRED']).optional(),
+}).refine(
+  (data) => data.endsAt || data.daysFromNow || data.status,
+  { message: 'حداقل یکی از endsAt، daysFromNow یا status باید ارسال شود' }
+);
+
+// تخصیص مشاور به مؤسسه — instituteId می‌تواند null باشد (یعنی مستقل شدن)
+const assignInstituteSchema = z.object({
+  instituteId: z.string().cuid().optional().nullable(),
+});
+
+// ساخت OTP برای ورود یک‌بار مصرف — طول مدت اعتبار به ساعت (پیش‌فرض ۲۴)
+const createOtpSchema = z.object({
+  ttlHours: z.number().int().min(1).max(168).optional(),
+});
+
 const profileSchema = z.object({
   fullName: z.string().trim().min(2, 'نام باید حداقل ۲ کاراکتر باشد').max(80).optional(),
   phone: optionalText(20),
@@ -83,5 +114,10 @@ module.exports = {
     tag: tagSchema,
     weeklyGoal: weeklyGoalSchema,
     saveAnswer: saveAnswerSchema,
+    forgotPassword: forgotPasswordSchema,
+    resetPassword: resetPasswordSchema,
+    updateInstituteSubscription: updateInstituteSubscriptionSchema,
+    assignInstitute: assignInstituteSchema,
+    createOtp: createOtpSchema,
   },
 };

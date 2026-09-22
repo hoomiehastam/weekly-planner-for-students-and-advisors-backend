@@ -93,6 +93,11 @@ model User {
   instituteId String?
   institute   Institute? @relation(fields: [instituteId], references: [id], onDelete: SetNull)
 
+  // --- رمز یکبار مصرف (OTP) برای ورود وقتی کاربر رمزش را فراموش کرده ---
+  // سوپرادمین یک OTP می‌سازد و به کاربر می‌دهد. کاربر با آن وارد می‌شود و سپس پاک می‌شود.
+  otpHash        String?
+  otpExpiresAt   DateTime?
+
   // روابط مشاور ↔ دانش‌آموز
   asAdvisorLinks  AdvisorStudentLink[] @relation("AdvisorSide")
   asStudentLinks  AdvisorStudentLink[] @relation("StudentSide")
@@ -116,7 +121,29 @@ model User {
   // ارسال‌های آزمون دانش‌آموز
   examSubmissions ExamSubmission[] @relation("ExamSubmissionStudent")
 
+  // توکن‌های بازنشانی رمز عبور (فراموشی رمز)
+  passwordResets  PasswordReset[]
+
   @@index([instituteId])
+}
+
+// توکن‌های یک‌بار مصرف برای بازنشانی رمز عبور از طریق ایمیل
+// کاربر درخواست می‌دهد → توکن ساخته می‌شود → لینک با توکن به ایمیل می‌رود
+// → کاربر روی لینک کلیک می‌کند → رمز جدید را تنظیم می‌کند → توکن usedAt می‌شود
+model PasswordReset {
+  id        String   @id @default(cuid())
+  email     String
+  token     String   @unique
+  // زمان انقضا — معمولاً ۱ ساعت
+  expiresAt DateTime
+  // زمان استفاده — null یعنی هنوز استفاده نشده
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String?
+
+  @@index([email])
 }
 
 // اتصال یک به چند بین مشاور و دانش‌آموز؛ دانش‌آموز فقط یک مشاور دارد
