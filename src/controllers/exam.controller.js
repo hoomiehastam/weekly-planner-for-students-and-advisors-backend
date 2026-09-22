@@ -583,6 +583,82 @@ async function submitExam(req, res, next) {
   }
 }
 
+// مرور آزمون توسط دانش‌آموز — فقط پس از ارسال:
+// گزینه‌ی صحیح، پاسخ خود دانش‌آموز و نمره‌ی هر سؤال را برمی‌گرداند.
+// (در getMyExams عمداً correctOption حذف می‌شود تا پیش از ارسال درز نکند؛
+//  این اندپوینت گیت ورودی=status SUBMITTED/GRADED دارد.)
+async function getExamReview(req, res, next) {
+  try {
+    const { id } = req.params; // examId
+
+    const exam = await prisma.exam.findUnique({
+      where: { id },
+      include: { questions: { orderBy: { order: 'asc' } } },
+    });
+    if (!exam) {
+      return res.status(404).json({ error: 'آزمون یافت نشد' });
+    }
+    if (exam.studentId !== req.user.id) {
+      return res.status(403).json({ error: 'این آزمون متعلق به شما نیست' });
+    }
+
+    const submission = await prisma.examSubmission.findFirst({
+      where: { examId: id, studentId: req.user.id, status: { in: ['SUBMITTED', 'GRADED'] } },
+      include: { answers: true },
+    });
+    if (!submission) {
+      return res.status(403).json({
+        error: 'مرور پاسخ‌ها فقط پس از ارسال آزمون امکان‌پذیر است',
+      });
+    }
+
+    const answerByQuestion = new Map(submission.answers.map((a) => [a.questionId, a]));
+
+    const review = exam.questions.map((q) => {
+      const a = answerByQuestion.get(q.id);
+      const isMC = q.type === 'MULTIPLE_CHOICE';
+      let verdict = null; // فقط سؤالات تستی صحیح/غلط قطعی دارند
+      if (isMC) {
+        if (a?.selectedOption === null || a?.selectedOption === undefined) {
+          verdict = 'unanswered';
+        } else if (a.selectedOption === q.correctOption) {
+          verdict = 'correct';
+        } else {
+          verdict = 'wrong';
+        }
+      }
+      return {
+        id: q.id,
+        type: q.type,
+        text: q.text,
+        imageUrl: q.imageUrl,
+        points: q.points,
+        options: isMC && q.options ? q.options.split('|') : null,
+        // این‌ها فقط پس از گیت ارسال برمی‌گردند:
+        correctOption: isMC ? q.correctOption : null,
+        selectedOption: a?.selectedOption ?? null,
+        textAnswer: a?.textAnswer ?? null,
+        score: a?.score ?? null,
+        verdict,
+      };
+    });
+
+    res.json({
+      submission: {
+        id: submission.id,
+        status: submission.status,
+        totalScore: submission.totalScore,
+        maxScore: submission.maxScore,
+        submittedAt: submission.submittedAt,
+        feedback: submission.feedback,
+      },
+      review,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ====== توابع نمره‌دهی مشاور ======
 
 // گرفتن همه‌ی ارسال‌های یک آزمون (برای مشاور)
@@ -717,6 +793,7 @@ module.exports = {
   startExam,
   saveAnswer,
   submitExam,
+  getExamReview,
   getExamSubmissions,
   gradeSubmission,
 };

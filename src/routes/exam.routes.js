@@ -11,6 +11,7 @@ const {
   startExam,
   saveAnswer,
   submitExam,
+  getExamReview,
   getExamSubmissions,
   gradeSubmission,
 } = require('../controllers/exam.controller');
@@ -30,5 +31,7 @@ router.get('/mine', requireRole('STUDENT'), getMyExams);
 router.post('/:id/start', requireRole('STUDENT'), startExam);
 router.post('/submissions/:id/save', requireRole('STUDENT'), validate(schemas.saveAnswer), saveAnswer);
 router.post('/submissions/:id/submit', requireRole('STUDENT'), submitExam);
+// مرور پاسخ‌ها پس از ارسال (گزینه‌ی صحیح + نمره‌ی هر سؤال)
+router.get('/:id/review', requireRole('STUDENT'), getExamReview);
 
 module.exports = router;
