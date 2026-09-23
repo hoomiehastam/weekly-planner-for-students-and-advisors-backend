@@ -7,7 +7,10 @@
 const FA_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
 
 // انگلیسی → فارسی
+// null/undefined به «—» تبدیل می‌شود تا هرگز کلمه‌ی «undefined» رندر نشود
+// (هم‌گام با shared/fa-digits.mjs نگه داشته شود)
 function toFaDigits(value) {
+  if (value === null || value === undefined || value === '') return '—';
   return String(value).replace(/[0-9]/g, (d) => FA_DIGITS[Number(d)]);
 }
 

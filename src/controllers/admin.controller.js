@@ -114,10 +114,16 @@ async function activateInstitute(req, res, next) {
 async function approveAdvisor(req, res, next) {
   try {
     const { id } = req.params;
-    const advisor = await prisma.user.findFirst({ where: { id, role: 'ADVISOR' } });
+    // سوپرادمین هم ممکن است هدفِ تأیید باشد (حسابش در همان فهرست overview می‌آید)
+    const advisor = await prisma.user.findFirst({
+      where: { id, role: { in: ['ADVISOR', 'SUPERADMIN'] } },
+    });
 
     if (!advisor) {
       return res.status(404).json({ error: 'مشاور یافت نشد' });
+    }
+    if (advisor.status === 'ACTIVE') {
+      return res.status(400).json({ error: 'این حساب از قبل فعال است' });
     }
 
     const updated = await prisma.user.update({
@@ -135,10 +141,16 @@ async function approveAdvisor(req, res, next) {
 async function rejectAdvisor(req, res, next) {
   try {
     const { id } = req.params;
-    const advisor = await prisma.user.findFirst({ where: { id, role: 'ADVISOR' } });
+    const advisor = await prisma.user.findFirst({
+      where: { id, role: { in: ['ADVISOR', 'SUPERADMIN'] } },
+    });
 
     if (!advisor) {
       return res.status(404).json({ error: 'مشاور یافت نشد' });
+    }
+    // حساب سوپرادمین هرگز نباید رد/قفل شود — وگرنه دسترسی مدیریتی از دست می‌رود
+    if (advisor.role === 'SUPERADMIN') {
+      return res.status(400).json({ error: 'حساب سوپرادمین قابل رد کردن نیست' });
     }
 
     const updated = await prisma.user.update({
@@ -165,6 +177,8 @@ async function listAdvisorsOverview(req, res, next) {
         phone: true,
         bio: true,
         status: true,
+        // نقش برای فرانت لازم است تا ردیف سوپرادمین را با پیل مشخص نشان دهد
+        role: true,
         field: true,
         institute: { select: { id: true, name: true } },
         advisorFields: { select: { field: true } },
@@ -218,7 +232,11 @@ async function assignAdvisorFields(req, res, next) {
       return res.status(400).json({ error: 'نهایتاً ۳ رشته می‌توان انتخاب کرد' });
     }
 
-    const advisor = await prisma.user.findFirst({ where: { id, role: 'ADVISOR' } });
+    // سوپرادمین هم در فهرست overview هست و می‌تواند رشته‌ی تخصص داشته باشد
+    // (دانش‌آموزانِ همان رشته او را در فرم ثبت‌نام می‌بینند)
+    const advisor = await prisma.user.findFirst({
+      where: { id, role: { in: ['ADVISOR', 'SUPERADMIN'] } },
+    });
     if (!advisor) {
       return res.status(404).json({ error: 'مشاور یافت نشد' });
     }
@@ -250,12 +268,18 @@ async function assignAdvisorFields(req, res, next) {
 async function deactivateAdvisor(req, res, next) {
   try {
     const { id } = req.params;
-    const advisor = await prisma.user.findFirst({ where: { id, role: 'ADVISOR' } });
+    const advisor = await prisma.user.findFirst({
+      where: { id, role: { in: ['ADVISOR', 'SUPERADMIN'] } },
+    });
     if (!advisor) {
       return res.status(404).json({ error: 'مشاور یافت نشد' });
     }
+    // سوپرادمین نباید بتواند خودش را غیرفعال کند — وگرنه کل پنل مدیریتی قفل می‌شود
+    if (advisor.id === req.user.id) {
+      return res.status(400).json({ error: 'نمی‌توانید حساب خودتان را غیرفعال کنید' });
+    }
     if (advisor.status === 'SUSPENDED') {
-      return res.status(400).json({ error: 'این مشاور از قبل غیرفعال است' });
+      return res.status(400).json({ error: 'این حساب از قبل غیرفعال است' });
     }
     await prisma.user.update({
       where: { id },
@@ -271,12 +295,14 @@ async function deactivateAdvisor(req, res, next) {
 async function reactivateAdvisor(req, res, next) {
   try {
     const { id } = req.params;
-    const advisor = await prisma.user.findFirst({ where: { id, role: 'ADVISOR' } });
+    const advisor = await prisma.user.findFirst({
+      where: { id, role: { in: ['ADVISOR', 'SUPERADMIN'] } },
+    });
     if (!advisor) {
       return res.status(404).json({ error: 'مشاور یافت نشد' });
     }
     if (advisor.status !== 'SUSPENDED') {
-      return res.status(400).json({ error: 'این مشاور از قبل فعال است یا هنوز تأیید نشده' });
+      return res.status(400).json({ error: 'این حساب از قبل فعال است یا هنوز تأیید نشده' });
     }
     await prisma.user.update({
       where: { id },
@@ -295,9 +321,15 @@ async function reactivateAdvisor(req, res, next) {
 async function deleteAdvisor(req, res, next) {
   try {
     const { id } = req.params;
-    const advisor = await prisma.user.findFirst({ where: { id, role: 'ADVISOR' } });
+    const advisor = await prisma.user.findFirst({
+      where: { id, role: { in: ['ADVISOR', 'SUPERADMIN'] } },
+    });
     if (!advisor) {
       return res.status(404).json({ error: 'مشاور یافت نشد' });
+    }
+    // سوپرادمین نباید بتواند حساب خودش را حذف کند — آخرین ادمین از دست می‌رود
+    if (advisor.id === req.user.id) {
+      return res.status(400).json({ error: 'نمی‌توانید حساب خودتان را حذف کنید' });
     }
     const studentCount = await prisma.advisorStudentLink.count({
       where: { advisorId: id },
@@ -423,7 +455,10 @@ async function assignAdvisorToInstitute(req, res, next) {
       }
     }
 
-    const advisor = await prisma.user.findFirst({ where: { id, role: 'ADVISOR' } });
+    // سوپرادمین هم می‌تواند به مؤسسه تخصیص یابد (یا از آن جدا شود)
+    const advisor = await prisma.user.findFirst({
+      where: { id, role: { in: ['ADVISOR', 'SUPERADMIN'] } },
+    });
     if (!advisor) {
       return res.status(404).json({ error: 'مشاور یافت نشد' });
     }

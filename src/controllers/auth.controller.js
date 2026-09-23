@@ -110,8 +110,9 @@ async function register(req, res, next) {
       if (!advisorId) {
         return res.status(400).json({ error: 'انتخاب مشاور برای دانش‌آموز الزامی است' });
       }
+      // سوپرادمین هم می‌تواند مشاور باشد (در فهرست مشاوران مستقل نمایش داده می‌شود)
       advisor = await prisma.user.findFirst({
-        where: { id: advisorId, role: 'ADVISOR', status: 'ACTIVE' },
+        where: { id: advisorId, role: { in: ['ADVISOR', 'SUPERADMIN'] }, status: 'ACTIVE' },
         include: { advisorFields: { select: { field: true } } },
       });
       if (!advisor) {
