@@ -753,4 +753,5 @@ module.exports = {
   reactivateAdvisor,
   deleteAdvisor,
   createUserOtp,
+  setInstituteLeader,
 };
