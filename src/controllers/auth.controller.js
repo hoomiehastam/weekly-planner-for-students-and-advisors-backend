@@ -3,11 +3,19 @@ const crypto = require('crypto');
 const prisma = require('../config/prisma');
 const { generateToken, setTokenCookie, clearTokenCookie } = require('../utils/jwt');
 const { normalizePhone, normalizeBio, validatePassword } = require('../utils/normalizers');
-const { sendPasswordResetEmail } = require('../utils/mailer');
+const { sendPasswordResetEmail, sendOtpEmail } = require('../utils/mailer');
 
 const SALT_ROUNDS = 10;
 const RESET_TOKEN_BYTES = 32;
 const RESET_TOKEN_EXPIRY_HOURS = 1;
+
+// ====== تنظیمات ورود خودخدمتی با کد ایمیلی (OTP) ======
+const OTP_LOGIN_LENGTH = 6; // کد عددی ۶ رقمی
+const OTP_LOGIN_TTL_MINUTES = 10; // عمر کد ورود خودخدمتی
+const OTP_LOGIN_RESEND_COOLDOWN_MS = 60 * 1000; // حداقل فاصله بین دو درخواست کد
+// فاصله‌ی مجاز بین درخواست‌های هر کاربر — در حافظه (برای استقرار تک‌نمونه‌ای کافی است؛
+// نمونه‌های چندتایی می‌توانند از Redis استفاده کنند)
+const otpLastRequestAt = new Map();
 
 // ثبت‌نام کاربر جدید.
 //   دانش‌آموز مستقل: بلافاصله ACTIVE ولی link با مشاور PENDING (مشاور باید تأیید کند)
@@ -195,12 +203,8 @@ async function login(req, res, next) {
     if (user.otpHash && user.otpExpiresAt && user.otpExpiresAt > new Date()) {
       const otpMatches = await bcrypt.compare(password, user.otpHash);
       if (otpMatches) {
-        // OTP درست بود — پاکش می‌کنیم و توکن می‌دهیم
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { otpHash: null, otpExpiresAt: null },
-        });
-
+        // اول وضعیت حساب را بررسی می‌کنیم تا OTP هدر نرود؛
+        // اگر همین حالا پاکش کنیم، کاربر غیرفعال/PENDING باید از سوپرادمین یا ایمیل کد جدید بگیرد
         if (user.status === 'PENDING') {
           return res.status(403).json({
             error: user.instituteId
@@ -214,6 +218,12 @@ async function login(req, res, next) {
         if (user.status === 'SUSPENDED') {
           return res.status(403).json({ error: 'حساب شما توسط سوپرادمین غیرفعال شده است. با پشتیبانی تماس بگیرید.' });
         }
+
+        // OTP درست بود و حساب هم سالم است — پاکش می‌کنیم و توکن می‌دهیم
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { otpHash: null, otpExpiresAt: null },
+        });
 
         const token = generateToken(user);
         setTokenCookie(res, token);
@@ -534,6 +544,73 @@ async function verifyResetToken(req, res, next) {
   }
 }
 
+// ====== درخواست کد یک‌بارمصرف ایمیلی برای ورود (خودخدمتی) ======
+// کاربر ایمیلش را وارد می‌کند و یک کد عددی ۶ رقمی برایش ایمیل می‌شود؛
+// سپس با ایمیل + همان کد از مسیر عادی login وارد می‌شود (کد جای رمز می‌نشیند).
+// نکات امنیتی:
+//   - پاسخ همیشه یکسان است تا با آن نتوان فهمید کدام ایمیل‌ها ثبت هستند (ضد enumeration)
+//   - کد با bcrypt هش می‌شود، ۱۰ دقیقه اعتبار دارد و بعد از ورود موفق پاک می‌شود
+//   - بین دو درخواست برای یک حساب حداقل ۶۰ ثانیه فاصله لازم است (ضد spam ایمیل)
+//   - رمز عبور قبلی باطل نمی‌شود و mustChangePassword هم true نمی‌شود —
+//     این مسیر «ورود بدون رمز» است، نه بازنشانی اجباری (برای بازنشانی، مسیر forgot-password هست)
+async function requestOtp(req, res, next) {
+  try {
+    const { email } = req.body;
+
+    const genericMessage =
+      'اگر این ایمیل در سیستم ثبت باشد، کد ورود یک‌بارمصرف به آن ارسال شد. صندوق ورودی (و پوشه‌ی اسپم) را بررسی کنید.';
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      return res.json({ message: genericMessage });
+    }
+
+    // محدودیت فاصله‌ی بین درخواست‌ها — ۶۰ ثانیه برای هر حساب
+    const last = otpLastRequestAt.get(user.id) || 0;
+    const elapsed = Date.now() - last;
+    if (elapsed < OTP_LOGIN_RESEND_COOLDOWN_MS) {
+      const waitSec = Math.ceil((OTP_LOGIN_RESEND_COOLDOWN_MS - elapsed) / 1000);
+      return res.status(429).json({
+        error: `کد قبلاً ارسال شده است؛ ${waitSec} ثانیه دیگر دوباره تلاش کنید`,
+      });
+    }
+
+    // تولید کد عددی ۶ رقمی
+    let otp = '';
+    for (let i = 0; i < OTP_LOGIN_LENGTH; i += 1) {
+      otp += String(crypto.randomInt(0, 10));
+    }
+
+    const otpHash = await bcrypt.hash(otp, SALT_ROUNDS);
+    const otpExpiresAt = new Date(Date.now() + OTP_LOGIN_TTL_MINUTES * 60 * 1000);
+
+    // توجه: برخلاف OTP سوپرادمین، اینجا passwordHash دست نمی‌خورد و
+    // mustChangePassword هم تغییر نمی‌کند — فقط یک کد ورود موقت می‌سازیم.
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { otpHash, otpExpiresAt },
+    });
+    otpLastRequestAt.set(user.id, Date.now());
+
+    // اگر ایمیل شکست خورد، به کاربر همان پیام عمومی را می‌دهیم و کد بی‌اعتبار می‌ماند
+    try {
+      await sendOtpEmail({
+        to: user.email,
+        otp,
+        userName: user.fullName,
+        ttlMinutes: OTP_LOGIN_TTL_MINUTES,
+      });
+    } catch (mailErr) {
+      req.log?.error?.({ err: mailErr }, 'ارسال ایمیل OTP ورود ناموفق');
+      otpLastRequestAt.delete(user.id);
+    }
+
+    res.json({ message: genericMessage, ttlMinutes: OTP_LOGIN_TTL_MINUTES });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   register,
   login,
@@ -544,4 +621,5 @@ module.exports = {
   resetPassword,
   verifyResetToken,
   changeMyPassword,
+  requestOtp,
 };

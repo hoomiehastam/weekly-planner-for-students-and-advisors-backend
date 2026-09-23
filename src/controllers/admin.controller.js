@@ -1,6 +1,7 @@
 const prisma = require('../config/prisma');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
+const { sendOtpEmail } = require('../utils/mailer');
 
 const OTP_LENGTH = 8;
 const OTP_TTL_HOURS_DEFAULT = 24;
@@ -453,8 +454,11 @@ async function assignAdvisorToInstitute(req, res, next) {
 }
 
 // ====== ساخت رمز یک‌بار مصرف (OTP) برای کاربر ======
-// سوپرادمین وقتی کاربر رمزش را فراموش کرده، یک OTP می‌سازد و به کاربر می‌دهد.
-// کاربر با ایمیل + OTP وارد می‌شود. OTP فقط یک بار کار می‌کند و بعد پاک می‌شود.
+// سوپرادمین وقتی کاربر رمزش را فراموش کرده، یک OTP می‌سازد؛ کد به‌صورت خودکار
+// به ایمیل کاربر ارسال می‌شود (اگر SMTP تنظیم باشد؛ در حالت توسعه فقط لاگ می‌شود)
+// و برای اطمینان همان‌جا در پاسخ هم برگردانده می‌شود تا در صورت نبود SMTP
+// سوپرادمین بتواند دستی به کاربر بدهد. کاربر با ایمیل + OTP وارد می‌شود.
+// OTP فقط یک بار کار می‌کند و بعد پاک می‌شود.
 // طول عمر پیش‌فرض ۲۴ ساعت است (با ttlHours قابل تنظیم).
 //
 // نکته‌ی مهم: وقتی OTP ساخته می‌شود:
@@ -497,9 +501,27 @@ async function createUserOtp(req, res, next) {
       },
     });
 
+    // ارسال خودکار کد به ایمیل کاربر — حتی اگر شکست بخورد، OTP ساخته شده معتبر می‌ماند
+    // و در پاسخ به سوپرادمین برگردانده می‌شود تا دستی ارسالش کند.
+    let emailed = false;
+    try {
+      const mailResult = await sendOtpEmail({
+        to: user.email,
+        otp,
+        userName: user.fullName,
+        ttlMinutes: ttl * 60,
+      });
+      emailed = !mailResult?.devMode;
+    } catch (mailErr) {
+      req.log?.error?.({ err: mailErr }, 'ارسال ایمیل OTP ناموفق');
+    }
+
     res.json({
-      message: 'رمز یک‌بار مصرف ساخته شد. رمز قبلی کاربر بی‌اعتبار شد. آن را به کاربر بدهید.',
+      message: emailed
+        ? 'رمز یک‌بارمصرف ساخته شد و به ایمیل کاربر ارسال شد. رمز قبلی او بی‌اعتبار شد.'
+        : 'رمز یک‌بارمصرف ساخته شد. SMTP تنظیم نیست، پس کد را دستی به کاربر بدهید. رمز قبلی او بی‌اعتبار شد.',
       otp,
+      emailed,
       expiresAt: otpExpiresAt,
       ttlHours: ttl,
       // اطلاع‌رسانی به ادمین که کاربر باید بعد از ورود رمزش را عوض کند

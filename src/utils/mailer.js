@@ -93,4 +93,28 @@ ${resetUrl}
   return sendMail({ to, subject, html, text });
 }
 
-module.exports = { sendMail, sendPasswordResetEmail };
+// ایمیل کد یک‌بارمصرف (OTP) — برای ورود بدون رمز عبور یا بازیابی حساب
+// کد به‌صورت متن واضح فرستاده می‌شود و تا زمان مشخصی معتبر است.
+async function sendOtpEmail({ to, otp, userName, ttlMinutes = 10 }) {
+  const subject = `کد ورود یک‌بارمصرف: ${otp} — پلتفرم کنکور`;
+  const text = `سلام ${userName || ''}،
+کد یک‌بارمصرف ورود شما:
+${otp}
+این کد تا ${ttlMinutes} دقیقه معتبر است و فقط یک بار قابل استفاده است.
+اگر شما چنین درخواستی نداده‌اید، این ایمیل را نادیده بگیرید و رمز عبور خود را عوض کنید.`;
+  const html = `
+<div dir="rtl" style="font-family: sans-serif; line-height:1.8; color:#222;">
+  <h2 style="color:#4a3fbe;">کد ورود یک‌بارمصرف</h2>
+  <p>سلام ${userName || ''}،</p>
+  <p>کد ورود یک‌بارمصرف شما:</p>
+  <p style="text-align:center; margin: 24px 0;">
+    <span dir="ltr" style="display:inline-block; background:#f4f2ff; border:1px dashed #4a3fbe; color:#4a3fbe; padding:12px 28px; border-radius:8px; font-size:28px; font-weight:800; letter-spacing:6px;">${otp}</span>
+  </p>
+  <p style="font-size:13px; color:#666;">این کد تا <b>${ttlMinutes} دقیقه</b> معتبر است و فقط یک بار قابل استفاده است.</p>
+  <hr style="border:0; border-top:1px solid #eee; margin:24px 0;">
+  <p style="font-size:12px; color:#999;">اگر شما چنین درخواستی نداده‌اید، این ایمیل را نادیده بگیرید و برای امنیت بیشتر رمز عبور خود را تغییر دهید.</p>
+</div>`;
+  return sendMail({ to, subject, html, text });
+}
+
+module.exports = { sendMail, sendPasswordResetEmail, sendOtpEmail };

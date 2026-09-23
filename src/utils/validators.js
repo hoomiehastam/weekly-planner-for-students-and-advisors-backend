@@ -6,6 +6,18 @@ const { z } = require('zod');
 
 const emailSchema = z.string().trim().min(3).max(150).email('ایمیل نامعتبر است');
 
+// اسکیمای شناسه‌ی رکوردها (User، ExamQuestion، ...).
+// Prisma شناسه‌ها را با cuid() تولید می‌کند (مثل "cm5abc123xyz...")، نه uuid؛
+// اعتبارسنجی .uuid() روی این شناسه‌ها همیشه رد می‌شد و باگ‌هایی مثل
+// «شناسه‌ی مشاور نامعتبر است» در ثبت‌نام و ثبت‌نشدن پاسخ‌های آزمون را می‌ساخت.
+// اینجا فرمت آزاد اما سخت‌گیرانه‌ی کافی می‌گیریم: حروف/اعداد/خط تیره، بدون فاصله.
+const idSchema = z
+  .string()
+  .trim()
+  .min(10, 'شناسه نامعتبر است')
+  .max(64, 'شناسه نامعتبر است')
+  .regex(/^[A-Za-z0-9_-]+$/, 'شناسه نامعتبر است');
+
 // یک حرف (لاتین یا فارسی) و حداقل یک رقم
 const passwordSchema = z
   .string()
@@ -23,7 +35,7 @@ const registerSchema = z.object({
   role: z.enum(['STUDENT', 'ADVISOR'], { errorMap: () => ({ message: 'نقش باید STUDENT یا ADVISOR باشد' }) }),
   phone: optionalText(20),
   bio: optionalText(500),
-  advisorId: z.string().uuid('شناسه‌ی مشاور نامعتبر است').optional(),
+  advisorId: idSchema.optional(),
   // رشته‌ی تحصیلی — برای دانش‌آموز الزامی (تکی)، برای مشاور اختیاری (چون می‌تواند fields بفرستد)
   field: z.enum(['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'], {
     errorMap: () => ({ message: 'رشته باید یکی از HUMANITIES، MATH_PHYSICS یا EXPERIMENTAL باشد' }),
@@ -88,7 +100,7 @@ const profileSchema = z.object({
 });
 
 const reminderSchema = z.object({
-  studentId: z.string().uuid('شناسه‌ی دانش‌آموز نامعتبر است'),
+  studentId: idSchema,
   message: z.string().trim().min(1, 'متن یادآور الزامی است').max(500, 'متن یادآور نباید بیشتر از ۵۰۰ کاراکتر باشد'),
 });
 
@@ -103,9 +115,20 @@ const weeklyGoalSchema = z.object({
 
 // ذخیره‌ی موقت پاسخ — فقط ساختار؛ صحت وابستگی به سؤال در کنترلر بررسی می‌شود
 const saveAnswerSchema = z.object({
-  questionId: z.string().uuid('شناسه‌ی سؤال نامعتبر است'),
-  selectedOption: z.coerce.number().int().optional().nullable(),
+  questionId: idSchema,
+  selectedOption: z.coerce.number().int().min(1, 'شماره‌ی گزینه نامعتبر است').max(6, 'شماره‌ی گزینه نامعتبر است').optional().nullable(),
   textAnswer: z.string().max(10000, 'پاسخ نباید بیشتر از ۱۰۰۰۰ کاراکتر باشد').optional().nullable(),
+});
+
+// درخواست کد یک‌بارمصرف ایمیلی برای ورود خودخدمتی (بدون رمز عبور)
+const otpRequestSchema = z.object({
+  email: emailSchema,
+});
+
+// ورود با کد یک‌بارمصرف ایمیلی — کد جای رمز عبور می‌نشیند
+const otpLoginSchema = z.object({
+  email: emailSchema,
+  otp: z.string().trim().min(4, 'کد یک‌بارمصرف نامعتبر است').max(10, 'کد یک‌بارمصرف نامعتبر است'),
 });
 
 // میان‌افزار اعتبارسنجی: در صورت خطا، اولین پیام خطا با کد ۴۰۰ برمی‌گردد
@@ -133,6 +156,8 @@ module.exports = {
     saveAnswer: saveAnswerSchema,
     forgotPassword: forgotPasswordSchema,
     resetPassword: resetPasswordSchema,
+    otpRequest: otpRequestSchema,
+    otpLogin: otpLoginSchema,
     updateInstituteSubscription: updateInstituteSubscriptionSchema,
     assignInstitute: assignInstituteSchema,
     assignAdvisorFields: assignAdvisorFieldsSchema,
