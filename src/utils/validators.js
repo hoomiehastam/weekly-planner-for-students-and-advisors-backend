@@ -28,12 +28,15 @@ const passwordSchema = z
 
 const optionalText = (max) => z.string().trim().max(max).optional();
 
+const phoneSchema = z.string().trim().min(1, 'شماره تماس الزامی است').max(20, 'شماره تماس نامعتبر است');
+
 const registerSchema = z.object({
   fullName: z.string().trim().min(2, 'نام باید حداقل ۲ کاراکتر باشد').max(80, 'نام نباید بیشتر از ۸۰ کاراکتر باشد'),
   email: emailSchema,
   password: passwordSchema,
   role: z.enum(['STUDENT', 'ADVISOR'], { errorMap: () => ({ message: 'نقش باید STUDENT یا ADVISOR باشد' }) }),
-  phone: optionalText(20),
+  // شماره تماس در ثبت‌نام الزامی است (در پروفایل هم قابل ویرایش)
+  phone: phoneSchema,
   bio: optionalText(500),
   advisorId: idSchema.optional(),
   // رشته‌ی تحصیلی — برای دانش‌آموز الزامی (تکی)، برای مشاور اختیاری (چون می‌تواند fields بفرستد)
@@ -88,6 +91,11 @@ const assignAdvisorFieldsSchema = z.object({
   ).max(3, 'نهایتاً ۳ رشته').default([]),
 });
 
+// تعیین/عزل نماینده‌ی مؤسسه — leaderId: شناسه‌ی عضو یا null برای عزل
+const setLeaderSchema = z.object({
+  leaderId: idSchema.nullable(),
+});
+
 // ساخت OTP برای ورود یک‌بار مصرف — طول مدت اعتبار به ساعت (پیش‌فرض ۲۴)
 const createOtpSchema = z.object({
   ttlHours: z.number().int().min(1).max(168).optional(),
@@ -95,7 +103,7 @@ const createOtpSchema = z.object({
 
 const profileSchema = z.object({
   fullName: z.string().trim().min(2, 'نام باید حداقل ۲ کاراکتر باشد').max(80).optional(),
-  phone: optionalText(20),
+  phone: phoneSchema.optional().or(z.literal('').transform(() => '')),
   bio: optionalText(500),
 });
 
@@ -161,6 +169,7 @@ module.exports = {
     updateInstituteSubscription: updateInstituteSubscriptionSchema,
     assignInstitute: assignInstituteSchema,
     assignAdvisorFields: assignAdvisorFieldsSchema,
+    setLeader: setLeaderSchema,
     createOtp: createOtpSchema,
   },
 };

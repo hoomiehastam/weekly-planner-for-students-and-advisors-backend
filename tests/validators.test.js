@@ -19,11 +19,27 @@ test('register: advisorId به‌صورت cuid باید پذیرفته شود', 
     email: 'student@example.com',
     password: 'Passw0rd123',
     role: 'STUDENT',
+    phone: '09123456789',
     field: 'EXPERIMENTAL',
     advisorId: CUID,
   });
   assert.equal(result.success, true);
   assert.equal(result.data.advisorId, CUID);
+});
+
+// شماره تماس از این نسخه در ثبت‌نام الزامی است
+
+test('register: بدون شماره تماس باید رد شود', () => {
+  const result = schemas.register.safeParse({
+    fullName: 'دانش‌آموز تست',
+    email: 'student@example.com',
+    password: 'Passw0rd123',
+    role: 'STUDENT',
+    phone: '',
+    field: 'EXPERIMENTAL',
+    advisorId: CUID,
+  });
+  assert.equal(result.success, false);
 });
 
 test('register: advisorId نامعتبر (فارسی/فاصله) باید رد شود', () => {
@@ -32,6 +48,7 @@ test('register: advisorId نامعتبر (فارسی/فاصله) باید رد �
     email: 'student@example.com',
     password: 'Passw0rd123',
     role: 'STUDENT',
+    phone: '09123456789',
     field: 'EXPERIMENTAL',
     advisorId: 'شناسه نامعتبر',
   });

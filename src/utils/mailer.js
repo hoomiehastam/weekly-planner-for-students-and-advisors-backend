@@ -52,6 +52,14 @@ async function sendMail({ to, subject, html, text }) {
   const from = process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@konkur.local';
 
   if (!t) {
+    // هشدار پررنگ در تولید — ایمیل واقعاً ارسال نمی‌شود و کاربر هیچ‌وقت کد را نمی‌بیند
+    if (process.env.NODE_ENV === 'production') {
+      console.error(
+        '⚠️⚠️⚠️ [mailer] SMTP تنظیم نشده و ایمیل ارسال نمی‌شود! ' +
+        'متغیرهای SMTP_HOST، SMTP_PORT، SMTP_USER، SMTP_PASS را در محیط تولید تنظیم کنید ' +
+        '(برای Gmail: رمز اپلیکیشن با 2FA). تا آن موقع OTP و ایمیل بازیابی رمز کار نمی‌کنند.'
+      );
+    }
     // حالت توسعه: لاگ کن تا توسعه‌دهنده لینک/کد را ببیند
     console.log('────────── EMAIL (dev mode) ──────────');
     console.log('To:', to);

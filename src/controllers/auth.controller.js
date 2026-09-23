@@ -78,7 +78,11 @@ async function register(req, res, next) {
     let bioValue = null;
     let passwordValue;
     try {
+      // شماره تماس الزامی است (برای ارتباط مشاور ↔ دانش‌آموز و پشتیبانی)
       phoneValue = normalizePhone(phone);
+      if (!phoneValue) {
+        return res.status(400).json({ error: 'شماره تماس الزامی است' });
+      }
       bioValue = normalizeBio(bio);
       passwordValue = validatePassword(password);
     } catch (err) {
@@ -236,6 +240,7 @@ async function login(req, res, next) {
             role: user.role,
             phone: user.phone,
             bio: user.bio,
+            photoUrl: user.photoUrl,
             mustChangePassword: user.mustChangePassword === true,
           },
         });
@@ -290,6 +295,7 @@ async function login(req, res, next) {
         role: user.role,
         phone: user.phone,
         bio: user.bio,
+        photoUrl: user.photoUrl,
         mustChangePassword: false,
       },
     });
@@ -306,6 +312,12 @@ async function logout(req, res) {
 
 // اطلاعات کاربر لاگین‌شده بر اساس کوکی/توکن معتبر
 async function getMe(req, res) {
+  // اگر این کاربر نماینده‌ی (سردار) یک مؤسسه باشد، فرانت باید لینک پنل مؤسسه را نشان دهد
+  const ledInstitute = await prisma.institute.findFirst({
+    where: { leaderId: req.user.id },
+    select: { id: true, name: true },
+  });
+
   res.json({
     user: {
       id: req.user.id,
@@ -315,6 +327,9 @@ async function getMe(req, res) {
       phone: req.user.phone,
       bio: req.user.bio,
       field: req.user.field,
+      photoUrl: req.user.photoUrl,
+      // نمایندگی مؤسسه — null یعنی نماینده نیست
+      ledInstitute: ledInstitute || null,
       // برای اینکه فرانت بداند آیا باید صفحه‌ی تغییر رمز اجباری را نشان دهد یا خیر
       mustChangePassword: req.user.mustChangePassword === true,
     },
@@ -382,6 +397,7 @@ async function updateMyProfile(req, res, next) {
         role: true,
         phone: true,
         bio: true,
+        photoUrl: true,
       },
     });
 
@@ -389,6 +405,53 @@ async function updateMyProfile(req, res, next) {
       message: 'پروفایل به‌روزرسانی شد',
       user: updated,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ====== عکس پروفایل ======
+// body: { photoUrl: "data:image/png;base64,..." } یا { photoUrl: null } برای حذف
+// عکس به‌صورت data URL در دیتابیس ذخیره می‌شود (مثل imageUrl سؤالات آزمون).
+// فرمت‌های مجاز png/jpeg/webp/gif و سقف ~۵۰۰KB عکس واقعی (حدود ۷۰۰KB data URL).
+const MAX_PHOTO_DATAURL_LENGTH = 700 * 1024;
+const ALLOWED_PHOTO_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+
+async function updateMyPhoto(req, res, next) {
+  try {
+    const { photoUrl } = req.body;
+
+    // حذف عکس — null یا رشته‌ی خالی یعنی پاک‌کردن
+    if (photoUrl === null || photoUrl === '') {
+      await prisma.user.update({
+        where: { id: req.user.id },
+        data: { photoUrl: null },
+      });
+      return res.json({ message: 'عکس پروفایل حذف شد', photoUrl: null });
+    }
+
+    if (typeof photoUrl !== 'string' || !photoUrl.startsWith('data:image/')) {
+      return res.status(400).json({ error: 'عکس باید به‌صورت data URL تصویر ارسال شود' });
+    }
+
+    // استخراج MIME از data URL: data:image/png;base64,...
+    const mimeMatch = photoUrl.match(/^data:(image\/[a-zA-Z+]+);/);
+    const mime = mimeMatch ? mimeMatch[1].toLowerCase() : '';
+    if (!ALLOWED_PHOTO_MIME.includes(mime)) {
+      return res.status(400).json({ error: 'فرمت عکس باید PNG، JPEG، WebP یا GIF باشد' });
+    }
+
+    if (photoUrl.length > MAX_PHOTO_DATAURL_LENGTH) {
+      return res.status(413).json({ error: 'عکس خیلی بزرگ است — حداکثر ۵۰۰ کیلوبایت' });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { photoUrl },
+      select: { id: true, photoUrl: true },
+    });
+
+    res.json({ message: 'عکس پروفایل به‌روزرسانی شد', photoUrl: updated.photoUrl });
   } catch (err) {
     next(err);
   }
@@ -594,19 +657,28 @@ async function requestOtp(req, res, next) {
     otpLastRequestAt.set(user.id, Date.now());
 
     // اگر ایمیل شکست خورد، به کاربر همان پیام عمومی را می‌دهیم و کد بی‌اعتبار می‌ماند
+    let devOtp = null;
     try {
-      await sendOtpEmail({
+      const mailResult = await sendOtpEmail({
         to: user.email,
         otp,
         userName: user.fullName,
         ttlMinutes: OTP_LOGIN_TTL_MINUTES,
       });
+      // در حالت توسعه (SMTP تنظیم نشده) کد فقط در لاگ سرور می‌رود — همان را
+      // در پاسخ هم برمی‌گردانیم تا تست «ورود بدون رمز» بدون کاویدن لاگ‌ها ممکن باشد.
+      // در تولید هرگز برنمی‌گردد (devMode فقط وقتی SMTP نیست true می‌شود).
+      if (mailResult?.devMode && process.env.NODE_ENV !== 'production') {
+        devOtp = otp;
+      }
     } catch (mailErr) {
       req.log?.error?.({ err: mailErr }, 'ارسال ایمیل OTP ورود ناموفق');
       otpLastRequestAt.delete(user.id);
     }
 
-    res.json({ message: genericMessage, ttlMinutes: OTP_LOGIN_TTL_MINUTES });
+    const response = { message: genericMessage, ttlMinutes: OTP_LOGIN_TTL_MINUTES };
+    if (devOtp) response.devOtp = devOtp;
+    res.json(response);
   } catch (err) {
     next(err);
   }
@@ -618,6 +690,7 @@ module.exports = {
   logout,
   getMe,
   updateMyProfile,
+  updateMyPhoto,
   forgotPassword,
   resetPassword,
   verifyResetToken,

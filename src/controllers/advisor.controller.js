@@ -138,6 +138,7 @@ async function listPendingStudentRequests(req, res, next) {
             phone: true,
             bio: true,
             field: true,
+            photoUrl: true,
           },
         },
       },

@@ -6,6 +6,10 @@ const {
   approveAdvisor,
   rejectAdvisor,
   listAdvisorsOverview,
+  listStudentsOverview,
+  deactivateStudent,
+  reactivateStudent,
+  deleteStudent,
   createInstitute,
   listInstitutes,
   activateInstitute,
@@ -17,6 +21,7 @@ const {
   reactivateAdvisor,
   deleteAdvisor,
   createUserOtp,
+  setInstituteLeader,
 } = require('../controllers/admin.controller');
 const { validate, schemas } = require('../utils/validators');
 
@@ -41,6 +46,15 @@ router.delete('/advisors/:id', deleteAdvisor);
 
 // ساخت رمز یک‌بار مصرف (OTP) برای کاربر — وقتی رمزش را فراموش کرده
 router.post('/users/:id/otp', validate(schemas.createOtp), createUserOtp);
+
+// ====== مدیریت دانش‌آموزان ======
+router.get('/students/overview', listStudentsOverview);
+router.post('/students/:id/deactivate', deactivateStudent);
+router.post('/students/:id/reactivate', reactivateStudent);
+router.delete('/students/:id', deleteStudent);
+
+// تعیین/عزل نماینده (سردار) مؤسسه — body: { leaderId: userId|null }
+router.put('/institutes/:id/leader', validate(schemas.setLeader), setInstituteLeader);
 
 // مؤسسه‌ها: ساخت دستی (فروش B2B)، فهرست، فعال‌سازی
 router.post('/institutes', createInstitute);

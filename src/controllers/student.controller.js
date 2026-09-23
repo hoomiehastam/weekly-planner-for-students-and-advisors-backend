@@ -1,11 +1,12 @@
 const prisma = require('../config/prisma');
 
-// فهرست دانش‌آموزهایی که به همین مشاور متصل هستند (PENDING یا ACTIVE)
-// شامل شماره تماس، توضیحات، رشته و وضعیت اتصال
+// فهرست دانش‌آموزهای «فعال» مشاور — فقط اتصال‌های ACTIVE.
+// درخواست‌های PENDING اینجا نیستند (به /api/advisors/me/pending-students بروید)
+// تا دانش‌آموز قبل از تأیید مشاور، در فهرست دانش‌آموزان او ظاهر نشود.
 async function listMyStudents(req, res, next) {
   try {
     const links = await prisma.advisorStudentLink.findMany({
-      where: { advisorId: req.user.id, status: { in: ['PENDING', 'ACTIVE'] } },
+      where: { advisorId: req.user.id, status: 'ACTIVE' },
       include: {
         student: {
           select: {
@@ -15,14 +16,11 @@ async function listMyStudents(req, res, next) {
             phone: true,
             bio: true,
             field: true,
+            photoUrl: true,
           },
         },
       },
-      orderBy: [
-        // اول PENDING ها (نیاز به تصمیم‌گیری)، بعد ACTIVE ها
-        { status: 'asc' },
-        { createdAt: 'desc' },
-      ],
+      orderBy: { createdAt: 'desc' },
     });
     const students = links.map((link) => ({
       ...link.student,

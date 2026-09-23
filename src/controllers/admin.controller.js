@@ -71,6 +71,8 @@ async function listInstitutes(req, res, next) {
         status: true,
         createdAt: true,
         subscription: { select: { status: true, tier: true, endsAt: true } },
+        // نماینده‌ی فعلی (سردار) — سوپرادمین او را تعیین می‌کند
+        leader: { select: { id: true, fullName: true } },
         _count: { select: { members: true } },
       },
       orderBy: { createdAt: 'desc' },
@@ -183,6 +185,9 @@ async function listAdvisorsOverview(req, res, next) {
         institute: { select: { id: true, name: true } },
         advisorFields: { select: { field: true } },
         asAdvisorLinks: {
+          // فقط اتصال‌های ACTIVE — درخواست‌های PENDING هنوز دانش‌آموزِ مشاور نیستند
+          // و نباید در فهرست دانش‌آموزان او نمایش داده شوند
+          where: { status: 'ACTIVE' },
           select: {
             student: {
               select: {
@@ -488,6 +493,52 @@ async function assignAdvisorToInstitute(req, res, next) {
   }
 }
 
+// ====== تعیین نماینده (سردار) مؤسسه ======
+// سوپرادمین یکی از اعضای مؤسسه (معمولاً مشاور) را به‌عنوان نماینده تعیین می‌کند.
+// نماینده اختیارات مدیر مؤسسه را دارد (تأیید اعضا، دیدن فهرست‌ها، حذف عضو)
+// ولی نقشش INSTITUTE_MANAGER نمی‌شود — فقط Institute.leaderId ست می‌شود.
+// body: { leaderId: "userId" } برای تعیین یا { leaderId: null } برای عزل
+async function setInstituteLeader(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { leaderId } = req.body;
+
+    const institute = await prisma.institute.findUnique({ where: { id } });
+    if (!institute) {
+      return res.status(404).json({ error: 'مؤسسه یافت نشد' });
+    }
+
+    // عزل — leaderId: null
+    if (leaderId === null) {
+      await prisma.institute.update({ where: { id }, data: { leaderId: null } });
+      return res.json({ message: `نماینده‌ی مؤسسه‌ی «${institute.name}» عزل شد` });
+    }
+
+    // عضو باید واقعاً عضو همین مؤسسه و فعال باشد
+    const member = await prisma.user.findFirst({
+      where: {
+        id: leaderId,
+        instituteId: id,
+        role: { in: ['ADVISOR', 'STUDENT'] },
+        status: 'ACTIVE',
+      },
+    });
+    if (!member) {
+      return res.status(400).json({
+        error: 'نماینده باید یک عضو فعال همین مؤسسه باشد (مشاور یا دانش‌آموز)',
+      });
+    }
+
+    await prisma.institute.update({ where: { id }, data: { leaderId } });
+    res.json({
+      message: `«${member.fullName}» به‌عنوان نماینده‌ی مؤسسه‌ی «${institute.name}» تعیین شد`,
+      leader: { id: member.id, fullName: member.fullName },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ====== ساخت رمز یک‌بار مصرف (OTP) برای کاربر ======
 // سوپرادمین وقتی کاربر رمزش را فراموش کرده، یک OTP می‌سازد؛ کد به‌صورت خودکار
 // به ایمیل کاربر ارسال می‌شود (اگر SMTP تنظیم باشد؛ در حالت توسعه فقط لاگ می‌شود)
@@ -567,11 +618,130 @@ async function createUserOtp(req, res, next) {
   }
 }
 
+// ====== مدیریت دانش‌آموزان (سوپرادمین) ======
+// نمای کلی: همه‌ی دانش‌آموزان + مشاور متصل، مؤسسه، رشته، تماس و وضعیت
+async function listStudentsOverview(req, res, next) {
+  try {
+    const students = await prisma.user.findMany({
+      where: { role: 'STUDENT' },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        phone: true,
+        bio: true,
+        field: true,
+        status: true,
+        photoUrl: true,
+        createdAt: true,
+        institute: { select: { id: true, name: true } },
+        asStudentLinks: {
+          select: {
+            status: true,
+            createdAt: true,
+            advisor: { select: { id: true, fullName: true, role: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json({
+      students: students.map((s) => {
+        const activeLink = s.asStudentLinks.find((l) => l.status === 'ACTIVE');
+        const pendingLink = s.asStudentLinks.find((l) => l.status === 'PENDING');
+        return {
+          id: s.id,
+          fullName: s.fullName,
+          email: s.email,
+          phone: s.phone,
+          bio: s.bio,
+          field: s.field,
+          status: s.status,
+          photoUrl: s.photoUrl,
+          createdAt: s.createdAt,
+          institute: s.institute,
+          // مشاور فعلی (ACTIVE) و درخواست در انتظار (PENDING) — جدا از هم
+          advisor: activeLink ? activeLink.advisor : null,
+          pendingAdvisor: pendingLink ? pendingLink.advisor : null,
+          linkCreatedAt: (activeLink || pendingLink)?.createdAt || null,
+        };
+      }),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// غیرفعال‌کردن دانش‌آموز (SUSPENDED) — قابل بازگشت با reactivate
+async function deactivateStudent(req, res, next) {
+  try {
+    const { id } = req.params;
+    const student = await prisma.user.findFirst({ where: { id, role: 'STUDENT' } });
+    if (!student) {
+      return res.status(404).json({ error: 'دانش‌آموز یافت نشد' });
+    }
+    if (student.id === req.user.id) {
+      return res.status(400).json({ error: 'نمی‌توانید حساب خودتان را غیرفعال کنید' });
+    }
+    if (student.status === 'SUSPENDED') {
+      return res.status(400).json({ error: 'این حساب از قبل غیرفعال است' });
+    }
+    await prisma.user.update({ where: { id }, data: { status: 'SUSPENDED' } });
+    res.json({ message: `دانش‌آموز «${student.fullName}» غیرفعال شد`, student: { id, status: 'SUSPENDED' } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// فعال‌کردن مجدد دانش‌آموز
+async function reactivateStudent(req, res, next) {
+  try {
+    const { id } = req.params;
+    const student = await prisma.user.findFirst({ where: { id, role: 'STUDENT' } });
+    if (!student) {
+      return res.status(404).json({ error: 'دانش‌آموز یافت نشد' });
+    }
+    if (student.status !== 'SUSPENDED') {
+      return res.status(400).json({ error: 'این حساب غیرفعال نیست' });
+    }
+    await prisma.user.update({ where: { id }, data: { status: 'ACTIVE' } });
+    res.json({ message: `دانش‌آموز «${student.fullName}» دوباره فعال شد`, student: { id, status: 'ACTIVE' } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// حذف دانش‌آموز (hard delete) — برنامه‌ها، آزمون‌ها و یادآورهایش cascade می‌شوند
+async function deleteStudent(req, res, next) {
+  try {
+    const { id } = req.params;
+    const student = await prisma.user.findFirst({ where: { id, role: 'STUDENT' } });
+    if (!student) {
+      return res.status(404).json({ error: 'دانش‌آموز یافت نشد' });
+    }
+    if (student.id === req.user.id) {
+      return res.status(400).json({ error: 'نمی‌توانید حساب خودتان را حذف کنید' });
+    }
+    await prisma.user.delete({ where: { id } });
+    res.json({
+      message: `دانش‌آموز «${student.fullName}» حذف شد. همه‌ی برنامه‌ها و آزمون‌های او نیز پاک شد.`,
+      student: { id, fullName: student.fullName },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   listPendingAdvisors,
   approveAdvisor,
   rejectAdvisor,
   listAdvisorsOverview,
+  listStudentsOverview,
+  deactivateStudent,
+  reactivateStudent,
+  deleteStudent,
   createInstitute,
   listInstitutes,
   activateInstitute,

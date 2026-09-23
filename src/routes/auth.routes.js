@@ -7,6 +7,7 @@ const {
   logout,
   getMe,
   updateMyProfile,
+  updateMyPhoto,
   forgotPassword,
   resetPassword,
   verifyResetToken,
@@ -42,6 +43,9 @@ router.post('/verify-reset-token', verifyResetToken);
 // مسیرهای نیازمند ورود
 router.get('/me', authenticate, getMe);
 router.put('/me', authenticate, validate(schemas.profile), updateMyProfile);
+// عکس پروفایل — body: { photoUrl: "data:image/..." } برای تنظیم یا { photoUrl: null } برای حذف
+// سقف ~۷۰۰KB بدنه (حدود ۵۰۰KB عکس واقعی) در کنترلر چک می‌شود
+router.put('/me/photo', authenticate, updateMyPhoto);
 // تغییر رمز عبور خود کاربر (مثلاً بعد از ورود با OTP)
 router.put('/me/password', authenticate, changeMyPassword);
 

@@ -42,15 +42,37 @@ function requireRole(...roles) {
 // میان‌افزار مدیر مؤسسه: نقش را چک می‌کند و instituteId را از رکورد کاربر
 // (نه از کلاینت!) روی req می‌گذارد — همه‌ی کوئری‌های مدیر باید با همین اسکوپ شوند.
 // مدیریت نهایی: findFirst با { id, instituteId } تا شناسه‌های حدسی چیزی لو ندهند.
+//
+// دو مسیر مجاز:
+//   ۱) کاربر با role=INSTITUTE_MANAGER (عضو مؤسسه با instituteId)
+//   ۲) «نماینده/سردار» مؤسسه — عضو معمولی (معمولاً مشاور) که سوپرادمین او را
+//      در Institute.leaderId ثبت کرده؛ نقشش تغییر نمی‌کند ولی همین میان‌افزار
+//      به او اختیارات مدیریتی مؤسسه‌اش را می‌دهد.
 async function requireInstituteManager(req, res, next) {
-  if (!req.user || req.user.role !== 'INSTITUTE_MANAGER') {
+  if (!req.user) {
     return res.status(403).json({ error: 'دسترسی مجاز نیست' });
   }
-  if (!req.user.instituteId) {
-    return res.status(403).json({ error: 'شما به هیچ مؤسه‌ای متصل نیستید' });
+
+  // مسیر ۱: مدیر رسمی مؤسسه
+  if (req.user.role === 'INSTITUTE_MANAGER') {
+    if (!req.user.instituteId) {
+      return res.status(403).json({ error: 'شما به هیچ مؤسه‌ای متصل نیستید' });
+    }
+    req.instituteId = req.user.instituteId;
+    return next();
   }
-  req.instituteId = req.user.instituteId;
-  next();
+
+  // مسیر ۲: نماینده‌ی مؤسسه (leader) — سوپرادمین او را تعیین کرده
+  const ledInstitute = await prisma.institute.findFirst({
+    where: { leaderId: req.user.id },
+    select: { id: true },
+  });
+  if (ledInstitute) {
+    req.instituteId = ledInstitute.id;
+    return next();
+  }
+
+  return res.status(403).json({ error: 'دسترسی مجاز نیست' });
 }
 
 module.exports = { authenticate, requireRole, requireInstituteManager };

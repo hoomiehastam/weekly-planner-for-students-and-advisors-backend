@@ -1,6 +1,6 @@
 const prisma = require('../config/prisma');
 
-// ====== کنترلرهای مدیر مؤسسه ======
+// ====== کنترلرهای مدیر مؤسسه (و «نماینده/سردار» تعیین‌شده توسط سوپرادمین) ======
 // قانون طلایی اسکوپینگ: هر کوئری با instituteId که از req.user (نه کلاینت) آمده
 // فیلتر می‌شود، و رکورد تکی همیشه با findFirst({ id, instituteId }) گرفته می‌شود
 // تا شناسه‌ی حدسی چیزی لو ندهد (۴۰۴، نه ۴۰۳-بعد-از-گرفتن).
@@ -55,8 +55,13 @@ async function listInstituteAdvisors(req, res, next) {
         phone: true,
         bio: true,
         status: true,
+        photoUrl: true,
         createdAt: true,
-        asAdvisorLinks: { select: { student: { select: { id: true, fullName: true, status: true } } } },
+        // فقط اتصال‌های ACTIVE — درخواست‌های PENDING هنوز دانش‌آموزِ مشاور نیستند
+        asAdvisorLinks: {
+          where: { status: 'ACTIVE' },
+          select: { student: { select: { id: true, fullName: true, status: true } } },
+        },
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -120,9 +125,82 @@ async function rejectMember(req, res, next) {
   }
 }
 
+// فهرست دانش‌آموزان مؤسسه + مشاور متصل هرکدام
+// برای کارت‌های «دانش‌آموزان مؤسسه» در پنل مدیر/سردار
+async function listInstituteStudents(req, res, next) {
+  try {
+    const students = await prisma.user.findMany({
+      where: { instituteId: req.instituteId, role: 'STUDENT' },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        phone: true,
+        bio: true,
+        field: true,
+        status: true,
+        photoUrl: true,
+        createdAt: true,
+        asStudentLinks: {
+          select: {
+            status: true,
+            advisor: { select: { id: true, fullName: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json({
+      students: students.map((s) => ({
+        id: s.id,
+        fullName: s.fullName,
+        email: s.email,
+        phone: s.phone,
+        bio: s.bio,
+        field: s.field,
+        status: s.status,
+        photoUrl: s.photoUrl,
+        createdAt: s.createdAt,
+        // مشاورِ فعلی (ACTIVE) یا درخواستِ در انتظار (PENDING)
+        advisor: s.asStudentLinks.find((l) => l.status === 'ACTIVE')?.advisor || null,
+        pendingAdvisor: s.asStudentLinks.find((l) => l.status === 'PENDING')?.advisor || null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// حذف یک عضو از مؤسسه (دانش‌آموز یا مشاور) — کاربر حذف نمی‌شود، فقط مستقل می‌شود
+// سردار/مدیر مؤسسه نمی‌تواند خودش را حذف کند (خودقفل‌شدگی)
+async function removeMember(req, res, next) {
+  try {
+    const { id } = req.params;
+    if (id === req.user.id) {
+      return res.status(400).json({ error: 'نمی‌توانید خودتان را از مؤسسه حذف کنید' });
+    }
+    const member = await prisma.user.findFirst({
+      where: { id, instituteId: req.instituteId, role: { in: ['ADVISOR', 'STUDENT'] } },
+    });
+    if (!member) {
+      return res.status(404).json({ error: 'عضوی با این مشخصات در مؤسسه‌ی شما یافت نشد' });
+    }
+    await prisma.user.update({
+      where: { id },
+      data: { instituteId: null },
+    });
+    res.json({ message: `«${member.fullName}» از مؤسسه حذف شد و به حساب مستقل تبدیل شد` });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   getInstituteMe,
   listInstituteAdvisors,
+  listInstituteStudents,
   approveMember,
   rejectMember,
+  removeMember,
 };
