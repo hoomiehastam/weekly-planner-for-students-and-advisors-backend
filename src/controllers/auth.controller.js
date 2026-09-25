@@ -4,10 +4,13 @@ const prisma = require('../config/prisma');
 const { generateToken, setTokenCookie, clearTokenCookie } = require('../utils/jwt');
 const { normalizePhone, normalizeBio, validatePassword } = require('../utils/normalizers');
 const { sendPasswordResetEmail, sendOtpEmail } = require('../utils/mailer');
+const { remainingInstituteCapacity, CAPACITY_ERROR } = require('../utils/subscription');
 
 const SALT_ROUNDS = 10;
 const RESET_TOKEN_BYTES = 32;
 const RESET_TOKEN_EXPIRY_HOURS = 1;
+// دوره‌ی آزمایشی پیش‌فرض اشتراک فردی تازه‌ثبت‌نام‌ها
+const TRIAL_DAYS = 14;
 
 // ====== تنظیمات ورود خودخدمتی با کد ایمیلی (OTP) ======
 const OTP_LOGIN_LENGTH = 6; // کد عددی ۶ رقمی
@@ -106,6 +109,19 @@ async function register(req, res, next) {
       return res.status(400).json({ error: 'این مؤسسه هنوز تأیید نشده است' });
     }
 
+    // --- محدودیت ظرفیت مؤسسه ---
+    // اگر تعداد مشاور/دانش‌آموز مؤسسه به سقف اشتراکش رسیده باشد، عضو جدید پذیرفته نمی‌شود.
+    if (institute) {
+      const [sub, currentCount] = await Promise.all([
+        prisma.instituteSubscription.findUnique({ where: { instituteId: institute.id } }),
+        prisma.user.count({ where: { instituteId: institute.id, role } }),
+      ]);
+      const capacity = remainingInstituteCapacity(sub, role, currentCount);
+      if (!capacity.ok) {
+        return res.status(403).json({ error: CAPACITY_ERROR });
+      }
+    }
+
     // دانش‌آموز باید حتماً یک مشاور فعال را انتخاب کند
     // + مرز مؤسسه: مشاور و دانش‌آموز باید هم‌مؤسسه باشند یا هر دو مستقل
     // + مشاور باید رشته‌ی دانش‌آموز را در تخصص‌هایش داشته باشد
@@ -144,7 +160,8 @@ async function register(req, res, next) {
 
     const status = role === 'STUDENT' && !institute ? 'ACTIVE' : 'PENDING';
 
-    // ساخت کاربر + رشته‌های تخصص مشاور (اگر مشاور است) در یک تراکنش
+    // ساخت کاربر + رشته‌های تخصص مشاور (اگر مشاور است) + اشتراک آزمایشی در یک تراکنش
+    // (به ثبت‌نام‌های جدید ۱۴ روز TRIAL داده می‌شود تا چرخه‌ی واریز از روز اول معنا داشته باشد)
     const user = await prisma.user.create({
       data: {
         fullName,
@@ -156,6 +173,12 @@ async function register(req, res, next) {
         bio: bioValue,
         field: role === 'STUDENT' ? studentField : null,
         instituteId: institute ? institute.id : null,
+        subscription: {
+          create: {
+            status: 'TRIAL',
+            endsAt: new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000),
+          },
+        },
         ...(role === 'ADVISOR' && advisorFields
           ? { advisorFields: { create: advisorFields.map((f) => ({ field: f })) } }
           : {}),
@@ -332,6 +355,19 @@ async function getMe(req, res) {
       ledInstitute: ledInstitute || null,
       // برای اینکه فرانت بداند آیا باید صفحه‌ی تغییر رمز اجباری را نشان دهد یا خیر
       mustChangePassword: req.user.mustChangePassword === true,
+    },
+    // وضعیت اشتراک برای نمایش در هدر و هشدار نزدیکی انقضا
+    access: {
+      hasAccess: req.hasAccess !== false,
+      userSubscription: req.user.subscription && {
+        status: req.user.subscription.status,
+        endsAt: req.user.subscription.endsAt,
+      },
+      instituteSubscription: req.user.institute?.subscription && {
+        status: req.user.institute.subscription.status,
+        endsAt: req.user.institute.subscription.endsAt,
+        instituteName: req.user.institute.name,
+      },
     },
   });
 }

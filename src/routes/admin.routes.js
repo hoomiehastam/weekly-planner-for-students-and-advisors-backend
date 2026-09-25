@@ -22,6 +22,9 @@ const {
   deleteAdvisor,
   createUserOtp,
   setInstituteLeader,
+  updateUserSubscription,
+  updateInstituteLimits,
+  setCardSettings,
 } = require('../controllers/admin.controller');
 const { validate, schemas } = require('../utils/validators');
 
@@ -66,5 +69,21 @@ router.delete('/institutes/:id', deleteInstitute);
 
 // تنظیم مدت اشتراک مؤسسه (تاریخ پایان / تعداد روز / وضعیت)
 router.put('/institutes/:id/subscription', validate(schemas.updateInstituteSubscription), updateInstituteSubscription);
+
+// تنظیم سقف اعضای مؤسسه (maxAdvisors/maxStudents — null یعنی بی‌نهایت)
+router.put('/institutes/:id/limits', validate(schemas.updateInstituteLimits), updateInstituteLimits);
+
+// کارت واریز مؤسسه یا کارت پلتفرم — body: { cardNumber, shaba?, holderName? }
+router.put('/institutes/:id/card', validate(schemas.cardSettings), (req, res, next) => {
+  req.body.kind = 'INSTITUTE';
+  setCardSettings(req, res, next);
+});
+router.put('/card/system', validate(schemas.cardSettings), (req, res, next) => {
+  req.body.kind = 'SYSTEM';
+  setCardSettings(req, res, next);
+});
+
+// تنظیم اشتراک فردی کاربر (مشاور مستقل / دانش‌آموز) — مثل اشتراک مؤسسه
+router.put('/users/:id/subscription', validate(schemas.updateUserSubscription), updateUserSubscription);
 
 module.exports = router;

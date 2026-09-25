@@ -83,6 +83,7 @@ app.use('/api/reminders', require('./routes/reminder.routes'));
 app.use('/api/notifications', require('./routes/notification.routes'));
 app.use('/api/exams', require('./routes/exam.routes'));
 app.use('/api/institute', require('./routes/institute.routes'));
+app.use('/api/subscription', require('./routes/subscription.routes'));
 
 // هندلر ۴۰۴ برای مسیرهای تعریف‌نشده
 app.use((req, res) => {

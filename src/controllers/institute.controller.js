@@ -1,4 +1,5 @@
 const prisma = require('../config/prisma');
+const { remainingInstituteCapacity, CAPACITY_ERROR } = require('../utils/subscription');
 
 // ====== کنترلرهای مدیر مؤسسه (و «نماینده/سردار» تعیین‌شده توسط سوپرادمین) ======
 // قانون طلایی اسکوپینگ: هر کوئری با instituteId که از req.user (نه کلاینت) آمده
@@ -18,7 +19,7 @@ async function getInstituteMe(req, res, next) {
         status: true,
         createdAt: true,
         subscription: {
-          select: { status: true, tier: true, endsAt: true },
+          select: { status: true, tier: true, endsAt: true, maxAdvisors: true, maxStudents: true },
         },
       },
     });
@@ -35,7 +36,23 @@ async function getInstituteMe(req, res, next) {
     ]);
 
     res.json({
-      institute: { ...institute, advisorCount, studentCount, pendingCount },
+      institute: {
+        ...institute,
+        advisorCount,
+        studentCount,
+        pendingCount,
+        // ظرفیت باقیمانده برای نمایش هشدار «اشتراک را ارتقا دهید» در پنل مؤسسه
+        limits: {
+          maxAdvisors: institute.subscription?.maxAdvisors ?? null,
+          maxStudents: institute.subscription?.maxStudents ?? null,
+          advisorsRemaining: institute.subscription?.maxAdvisors != null
+            ? Math.max(0, institute.subscription.maxAdvisors - advisorCount)
+            : null,
+          studentsRemaining: institute.subscription?.maxStudents != null
+            ? Math.max(0, institute.subscription.maxStudents - studentCount)
+            : null,
+        },
+      },
     });
   } catch (err) {
     next(err);
@@ -93,6 +110,15 @@ async function approveMember(req, res, next) {
     });
     if (!member) {
       return res.status(404).json({ error: 'درخواستی برای تأیید یافت نشد' });
+    }
+    // --- محدودیت ظرفیت: تأیید عضو جدید نباید سقف اشتراک را رد کند ---
+    const [sub, currentCount] = await Promise.all([
+      prisma.instituteSubscription.findUnique({ where: { instituteId: req.instituteId } }),
+      prisma.user.count({ where: { instituteId: req.instituteId, role: member.role } }),
+    ]);
+    const capacity = remainingInstituteCapacity(sub, member.role, currentCount);
+    if (!capacity.ok) {
+      return res.status(403).json({ error: CAPACITY_ERROR });
     }
     const updated = await prisma.user.update({
       where: { id },

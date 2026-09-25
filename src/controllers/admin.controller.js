@@ -2,6 +2,7 @@ const prisma = require('../config/prisma');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { sendOtpEmail } = require('../utils/mailer');
+const { remainingInstituteCapacity, CAPACITY_ERROR } = require('../utils/subscription');
 
 const OTP_LENGTH = 8;
 const OTP_TTL_HOURS_DEFAULT = 24;
@@ -70,7 +71,7 @@ async function listInstitutes(req, res, next) {
         code: true,
         status: true,
         createdAt: true,
-        subscription: { select: { status: true, tier: true, endsAt: true } },
+        subscription: { select: { status: true, tier: true, endsAt: true, maxAdvisors: true, maxStudents: true } },
         // نماینده‌ی فعلی (سردار) — سوپرادمین او را تعیین می‌کند
         leader: { select: { id: true, fullName: true } },
         _count: { select: { members: true } },
@@ -184,6 +185,8 @@ async function listAdvisorsOverview(req, res, next) {
         field: true,
         institute: { select: { id: true, name: true } },
         advisorFields: { select: { field: true } },
+        // اشتراک فردی — سوپرادمین برای تمدید/قطع پنل مشاور آن را ویرایش می‌کند
+        subscription: { select: { status: true, tier: true, endsAt: true } },
         asAdvisorLinks: {
           // فقط اتصال‌های ACTIVE — درخواست‌های PENDING هنوز دانش‌آموزِ مشاور نیستند
           // و نباید در فهرست دانش‌آموزان او نمایش داده شوند
@@ -456,6 +459,17 @@ async function assignAdvisorToInstitute(req, res, next) {
         if (inst.status !== 'ACTIVE') {
           return res.status(400).json({ error: 'مؤسسه‌ی انتخاب‌شده هنوز تأیید نشده است' });
         }
+        // محدودیت ظرفیت مشاوران مؤسسه — فقط وقتی مشاور را «به داخل» مؤسسه می‌بریم
+        if (advisor.instituteId !== trimmed) {
+          const [sub, currentCount] = await Promise.all([
+            prisma.instituteSubscription.findUnique({ where: { instituteId: trimmed } }),
+            prisma.user.count({ where: { instituteId: trimmed, role: 'ADVISOR' } }),
+          ]);
+          const capacity = remainingInstituteCapacity(sub, 'ADVISOR', currentCount);
+          if (!capacity.ok) {
+            return res.status(403).json({ error: `${inst.name}: ${CAPACITY_ERROR}` });
+          }
+        }
         instituteId = trimmed;
       }
     }
@@ -635,6 +649,8 @@ async function listStudentsOverview(req, res, next) {
         photoUrl: true,
         createdAt: true,
         institute: { select: { id: true, name: true } },
+        // اشتراک فردی دانش‌آموز — سوپرادمین می‌تواند دستی تمدید کند
+        subscription: { select: { status: true, tier: true, endsAt: true } },
         asStudentLinks: {
           select: {
             status: true,
@@ -733,6 +749,129 @@ async function deleteStudent(req, res, next) {
   }
 }
 
+// ====== تنظیم اشتراک فردی کاربر توسط سوپرادمین ======
+// مثل اشتراک مؤسسه: تاریخ پایان (endsAt) یا تعداد روز از حالا (daysFromNow) + وضعیت.
+// کاربرد اصلی: تمدید/قطع پنل مشاورها و دانش‌آموزهایی که عضو هیچ مؤسسه‌ای نیستند.
+// کاربر سوپرادمین اشتراک نمی‌خواهد (همیشه آزاد است) — رد می‌شود.
+async function updateUserSubscription(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { endsAt, daysFromNow: days, status } = req.body;
+
+    const user = await prisma.user.findUnique({ where: { id } });
+    if (!user) return res.status(404).json({ error: 'کاربر یافت نشد' });
+    if (user.role === 'SUPERADMIN') {
+      return res.status(400).json({ error: 'سوپرادمین به اشتراک نیاز ندارد' });
+    }
+
+    let finalEndsAt;
+    if (endsAt) {
+      finalEndsAt = new Date(endsAt);
+      if (isNaN(finalEndsAt.getTime())) {
+        return res.status(400).json({ error: 'تاریخ پایان نامعتبر است' });
+      }
+    } else if (days) {
+      finalEndsAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    }
+
+    const data = {};
+    if (finalEndsAt) data.endsAt = finalEndsAt;
+    if (status) data.status = status;
+
+    const subscription = await prisma.userSubscription.upsert({
+      where: { userId: id },
+      create: {
+        userId: id,
+        status: status || 'ACTIVE',
+        startsAt: new Date(),
+        endsAt: finalEndsAt || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      },
+      update: data,
+    });
+
+    res.json({
+      message: 'اشتراک کاربر به‌روزرسانی شد',
+      subscription: {
+        id: subscription.id,
+        status: subscription.status,
+        endsAt: subscription.endsAt,
+        tier: subscription.tier,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ====== تنظیم سقف اعضای مؤسسه توسط سوپرادمین ======
+// body: { maxAdvisors: number|null, maxStudents: number|null } — null یعنی بی‌نهایت.
+// وقتی ظرفیت پر شود، ثبت‌نام/تأیید عضو جدید با پیام ارتقا اشتراک رد می‌شود.
+async function updateInstituteLimits(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { maxAdvisors, maxStudents } = req.body;
+
+    const institute = await prisma.institute.findUnique({ where: { id } });
+    if (!institute) return res.status(404).json({ error: 'مؤسسه یافت نشد' });
+
+    const subscription = await prisma.instituteSubscription.upsert({
+      where: { instituteId: id },
+      create: {
+        instituteId: id,
+        status: 'TRIAL',
+        startsAt: new Date(),
+        endsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+        maxAdvisors,
+        maxStudents,
+      },
+      update: { maxAdvisors, maxStudents },
+    });
+
+    res.json({
+      message: 'محدودیت اعضای مؤسسه به‌روزرسانی شد',
+      limits: { maxAdvisors: subscription.maxAdvisors, maxStudents: subscription.maxStudents },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ====== تنظیم/ویرایش کارت واریز مؤسسه یا کارت پلتفرم توسط سوپرادمین ======
+// body: { kind: 'INSTITUTE'|'SYSTEM', cardNumber, shaba?, holderName? }
+async function setCardSettings(req, res, next) {
+  try {
+    const { kind, cardNumber, shaba, holderName } = req.body;
+
+    // نرمال‌سازی شماره کارت (فاصله/خط تیره/اعداد فارسی)
+    const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
+    const normalized = String(cardNumber)
+      .replace(/[\s-]/g, '')
+      .replace(/[۰-۹]/g, (d) => String(persianDigits.indexOf(d)));
+    if (!/^\d{16}$/.test(normalized)) {
+      return res.status(400).json({ error: 'شماره کارت باید دقیقاً ۱۶ رقم باشد' });
+    }
+
+    const ownerId = kind === 'INSTITUTE' ? req.params.id : null;
+    if (kind === 'INSTITUTE') {
+      const inst = await prisma.institute.findUnique({ where: { id: ownerId } });
+      if (!inst) return res.status(404).json({ error: 'مؤسسه یافت نشد' });
+    }
+    if (kind !== 'INSTITUTE' && kind !== 'SYSTEM') {
+      return res.status(400).json({ error: 'نوع کارت نامعتبر است' });
+    }
+
+    const card = await prisma.cardSettings.upsert({
+      where: { ownerKind_ownerId: { ownerKind: kind, ownerId } },
+      create: { ownerKind: kind, ownerId, cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
+      update: { cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
+    });
+
+    res.json({ message: 'شماره کارت ذخیره شد', card });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   listPendingAdvisors,
   approveAdvisor,
@@ -754,4 +893,7 @@ module.exports = {
   deleteAdvisor,
   createUserOtp,
   setInstituteLeader,
+  updateUserSubscription,
+  updateInstituteLimits,
+  setCardSettings,
 };

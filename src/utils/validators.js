@@ -101,6 +101,48 @@ const createOtpSchema = z.object({
   ttlHours: z.number().int().min(1).max(168).optional(),
 });
 
+// ====== اشتراک و واریز ======
+
+// شماره کارت ۱۶ رقمی — با فاصله یا خط تیره هم قبول است؛ کنترلر نرمال می‌کند
+const cardSettingsSchema = z.object({
+  cardNumber: z.string().trim().min(16, 'شماره کارت باید ۱۶ رقم باشد').max(19),
+  shaba: z.string().trim().max(26, 'شماره شبا نامعتبر است').optional().nullable(),
+  holderName: z.string().trim().max(80, 'نام صاحب کارت طولانی است').optional().nullable(),
+});
+
+// ثبت رسید واریز توسط پرداخت‌کننده — عکس data URL مثل عکس پروفایل
+const createDepositSchema = z.object({
+  targetKind: z.enum(['USER', 'INSTITUTE'], { errorMap: () => ({ message: 'مقصد واریز نامعتبر است' }) }),
+  targetId: idSchema,
+  receiptImageUrl: z.string().startsWith('data:image/', 'عکس رسید باید data URL تصویر باشد')
+    .max(700 * 1024, 'عکس رسید خیلی بزرگ است — حداکثر ۵۰۰ کیلوبایت'),
+  amount: z.coerce.number().int('مبلغ باید عدد صحیح باشد').min(0).max(10000000000).optional().nullable(),
+  note: optionalText(300),
+});
+
+// تأیید/رد رسید توسط صاحب کارت — مدت تمدید دستی تعیین می‌شود
+const decideDepositSchema = z.object({
+  days: z.number().int('مدت تمدید باید عدد صحیح باشد').min(1, 'حداقل ۱ روز').max(3650, 'حداکثر ۳۶۵۰ روز')
+    .optional(),
+  decisionNote: optionalText(300),
+});
+
+// تنظیم اشتراک فردی کاربر توسط سوپرادمین — مثل اشتراک مؤسسه
+const updateUserSubscriptionSchema = z.object({
+  endsAt: z.string().datetime({ message: 'تاریخ پایان نامعتبر است' }).optional(),
+  daysFromNow: z.number().int().min(1).max(3650).optional(),
+  status: z.enum(['TRIAL', 'ACTIVE', 'GRACE', 'EXPIRED']).optional(),
+}).refine(
+  (data) => data.endsAt || data.daysFromNow || data.status,
+  { message: 'حداقل یکی از endsAt، daysFromNow یا status باید ارسال شود' }
+);
+
+// تنظیم سقف اعضای مؤسسه توسط سوپرادمین — null یعنی بی‌نهایت
+const updateInstituteLimitsSchema = z.object({
+  maxAdvisors: z.number().int().min(0).max(100000).nullable(),
+  maxStudents: z.number().int().min(0).max(100000).nullable(),
+});
+
 const profileSchema = z.object({
   fullName: z.string().trim().min(2, 'نام باید حداقل ۲ کاراکتر باشد').max(80).optional(),
   phone: phoneSchema.optional().or(z.literal('').transform(() => '')),
@@ -167,9 +209,20 @@ module.exports = {
     otpRequest: otpRequestSchema,
     otpLogin: otpLoginSchema,
     updateInstituteSubscription: updateInstituteSubscriptionSchema,
+    updateUserSubscription: updateUserSubscriptionSchema,
+    updateInstituteLimits: updateInstituteLimitsSchema,
+    cardSettings: cardSettingsSchema,
+    createDeposit: createDepositSchema,
+    decideDeposit: decideDepositSchema,
     assignInstitute: assignInstituteSchema,
     assignAdvisorFields: assignAdvisorFieldsSchema,
     setLeader: setLeaderSchema,
     createOtp: createOtpSchema,
+    updateInstituteSubscription: updateInstituteSubscriptionSchema,
+    updateUserSubscription: updateUserSubscriptionSchema,
+    updateInstituteLimits: updateInstituteLimitsSchema,
+    cardSettings: cardSettingsSchema,
+    createDeposit: createDepositSchema,
+    decideDeposit: decideDepositSchema,
   },
 };

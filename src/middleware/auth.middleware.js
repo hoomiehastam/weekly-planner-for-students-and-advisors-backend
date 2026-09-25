@@ -1,10 +1,37 @@
 const { verifyToken, TOKEN_COOKIE } = require('../utils/jwt');
+const { hasEffectiveAccess } = require('../utils/subscription');
 const prisma = require('../config/prisma');
+
+// مسیرهایی که حتی با اشتراک منقضی باید باز بمانند — وگرنه کاربر راهی برای تمدید
+// و مدیریت حسابش ندارد. همه‌ی مسیرهای کاری (برنامه، آزمون، یادآور، مدیریت ...) بسته‌اند.
+const SUBSCRIPTION_EXEMPT_PATHS = [
+  '/api/subscription/me',
+  '/api/deposits',
+  '/api/auth/me',
+  '/api/auth/logout',
+  '/api/auth/me/password',
+  '/api/auth/me/photo',
+];
+
+function isSubscriptionExempt(method, url) {
+  const path = (url || '').split('?')[0];
+  // اندپوینت‌های خودِ deposit — همه‌ی متدها آزادند تا کاربر رسیدش را ببیند/بفرستد
+  if (path.startsWith('/api/deposits')) return true;
+  if (!SUBSCRIPTION_EXEMPT_PATHS.includes(path)) return false;
+  // خواندن و تغییر پروفایل/رمز آزاد است؛ ولی تغییر داده‌های دیگر نه
+  return ['GET', 'PUT'].includes(method) || path !== '/api/auth/me';
+}
 
 // این میان‌افزار مطمئن می‌شود کاربر توکن معتبر فرستاده، سپس اطلاعات کاربر را روی درخواست قرار می‌دهد.
 // توکن از دو جا خوانده می‌شود:
 //   ۱) کوکی httpOnly (روش اصلی فعلی)
 //   ۲) هدر Authorization: Bearer (برای سازگاری با کلاینت‌های قبلی و API های خارجی)
+//
+// بعد از احراز هویت، اشتراک چک می‌شود (قطع خودکار):
+//   دسترسی = اشتراک فردی فعال «یا» اشتراک مؤسسه‌ی عضو فعال (یا هیچ رکوردی نباشد — سازگاری با عقب).
+//   اگر اشتراک تمام شده باشد، با کد ۴۰۳ و کد machine-readable یعنی SUBSCRIPTION_EXPIRED رد می‌شود؛
+//   فرانت با دیدن این کد، کاربر را به صفحه‌ی واریز/تمدید هدایت می‌کند.
+//   نکته: این چک فقط برای نقش‌های کاری است؛ سوپرادمین و مسیرهای مستثنا آزادند.
 async function authenticate(req, res, next) {
   const header = req.headers.authorization || '';
   const bearerToken = header.startsWith('Bearer ') ? header.slice(7) : null;
@@ -16,13 +43,31 @@ async function authenticate(req, res, next) {
 
   try {
     const payload = verifyToken(token);
-    const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      include: {
+        subscription: true,
+        institute: { include: { subscription: true } },
+      },
+    });
 
     if (!user || user.status !== 'ACTIVE') {
       return res.status(401).json({ error: 'حساب کاربری فعال نیست' });
     }
 
     req.user = user;
+
+    // --- قطع خودکار دسترسی بعد از انقضای اشتراک ---
+    if (!isSubscriptionExempt(req.method, req.originalUrl || req.url) && !hasEffectiveAccess(user, {
+      userSub: user.subscription,
+      instituteSub: user.institute?.subscription || null,
+    })) {
+      return res.status(403).json({
+        error: 'اشتراک شما به پایان رسیده است. برای تمدید، به صفحه‌ی واریز بروید.',
+        code: 'SUBSCRIPTION_EXPIRED',
+      });
+    }
+
     next();
   } catch (err) {
     return res.status(401).json({ error: 'توکن نامعتبر یا منقضی‌شده است' });

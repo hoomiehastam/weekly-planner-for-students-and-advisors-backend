@@ -27,9 +27,9 @@ enum UserStatus {
 
 // --- رشته‌ی تحصیلی (برای فیلتر مشاور ↔ دانش‌آموز) ---
 enum Field {
-  HUMANITIES    // علوم انسانی
-  MATH_PHYSICS  // ریاضی و فیزیک
-  EXPERIMENTAL  // علوم تجربی
+  HUMANITIES // علوم انسانی
+  MATH_PHYSICS // ریاضی و فیزیک
+  EXPERIMENTAL // علوم تجربی
 }
 
 // --- وضعیت اتصال مشاور ↔ دانش‌آموز ---
@@ -56,32 +56,134 @@ model Institute {
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
-  members   User[]
+  members      User[]
   subscription InstituteSubscription?
+  // تنظیمات کارت واریز مؤسسه و رسیدهای مقصدِ مؤسسه در جدول‌های CardSettings و
+  // DepositRequest با ownerKind='INSTITUTE' / targetKind='INSTITUTE' نگهداری می‌شوند
+  // (رابطه‌ی polymorphic در Prisma با FK معمولی ممکن نیست؛ ownerId/targetId رشته‌ی ساده‌اند)
   // سردبیر/نماینده‌ی مؤسسه — یک عضو مؤسسه (معمولاً مشاور) که سوپرادمین تعیین می‌کند و
   // اختیارات مدیر مؤسسه را دارد: تأیید/رد اعضا، دیدن دانش‌آموزان و حذف عضو از مؤسسه.
   // role کاربر تغییر نمی‌کند؛ فقط همین اشاره‌گر اختیارات می‌دهد (middleware چک می‌کند).
-  leaderId  String?
-  leader    User? @relation("InstituteLeader", fields: [leaderId], references: [id], onDelete: SetNull)
+  leaderId     String?
+  leader       User?                  @relation("InstituteLeader", fields: [leaderId], references: [id], onDelete: SetNull)
 }
 
 // پیوند اشتراک ماهانه‌ی مؤسسه — خود مؤسسه پرداخت می‌کند، نه اعضا
 model InstituteSubscription {
-  id          String   @id @default(cuid())
+  id             String   @id @default(cuid())
   // یک‌به‌یک: هر مؤسسه در هر لحظه یک اشتراک جاری دارد (تاریخچه در paymentEvents)
-  instituteId String   @unique
-  tier        String   @default("STANDARD")
-  status      String   @default("TRIAL") // TRIAL | ACTIVE | GRACE | EXPIRED
-  startsAt    DateTime @default(now())
-  endsAt      DateTime
+  instituteId    String   @unique
+  tier           String   @default("STANDARD")
+  status         String   @default("TRIAL") // TRIAL | ACTIVE | GRACE | EXPIRED
+  startsAt       DateTime @default(now())
+  endsAt         DateTime
+  // --- سقف اعضا (پلن‌بندی) — null یعنی بی‌نهایت ---
+  // وقتی تعداد مشاور/دانش‌آموز مؤسسه از سقف بگذرد:
+  //   - ثبت‌نام جدید با کد مؤسسه رد می‌شود
+  //   - تأیید عضو در انتظار توسط مدیر رد می‌شود
+  //   - تخصیص مشاور به مؤسسه توسط سوپرادمین رد می‌شود
+  // با پیام «ظرفیت تکمیل است؛ اشتراک را ارتقا دهید»
+  maxAdvisors    Int?
+  maxStudents    Int?
   // ردپای پرداخت/تمدید دستی (درگاه بانکی + ویرایش سوپرادمین)
   lastPaymentRef String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   institute Institute @relation(fields: [instituteId], references: [id], onDelete: Cascade)
 
   @@index([instituteId])
+}
+
+// اشتراک فردی مشاور یا دانش‌آموز — مثل InstituteSubscription اما یک‌به‌یک با User.
+// کاربر می‌تواند هم عضو مؤسسه باشد (اشتراک مؤسسه‌اش فعال) و هم اشتراک فردی داشته باشد؛
+// دسترسی مؤثر = اشتراک مؤسسه فعال «یا» اشتراک فردی فعال (منطق در utils/subscription.js).
+// سوپرادمین با updateUserSubscription تنظیمش می‌کند و تأیید رسید واریز تمدیدش می‌کند.
+// برای دانش‌آموزِ تازه ثبت‌نام، ۱۴ روز TRIAL خودکار ساخته می‌شود (سیاست پیش‌فرض).
+model UserSubscription {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  tier           String   @default("STANDARD")
+  status         String   @default("TRIAL") // TRIAL | ACTIVE | GRACE | EXPIRED
+  startsAt       DateTime @default(now())
+  endsAt         DateTime
+  lastPaymentRef String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// تنظیمات پرداخت یک هویت (کاربر یا مؤسسه) — شماره کارتی که دیگران برای تمدید
+// اشتراکش به آن واریز می‌کنند. به‌جای دو جدول، ownerKind صاحب را مشخص می‌کند:
+//   USER     → cardNumber متعلق به این کاربر است (مشاور مستقل)
+//   INSTITUTE→ متعلق به مؤسسه است (دانش‌آموزان و مشاوران مؤسسه به آن واریز می‌کنند)
+//   SYSTEM   → کارت پلتفرم (سوپرادمین آن را ست می‌کند؛ مشاورها و مؤسسه‌ها به آن واریز می‌کنند)
+// کارتِ هر صاحب در getDepositContext به مراجع درست نمایش داده می‌شود.
+// shaba اختیاری است برای نمایش «شماره شبا» کنار شماره کارت.
+model CardSettings {
+  id         String   @id @default(cuid())
+  ownerKind  String // USER | INSTITUTE | SYSTEM
+  ownerId    String? // userId یا instituteId؛ برای SYSTEM null (رابطه‌ی polymorphic — بدون FK)
+  cardNumber String
+  shaba      String?
+  holderName String? // نام صاحب کارت (پیش‌فرض: نام کاربر/مؤسسه)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([ownerKind, ownerId])
+  @@index([ownerId])
+}
+
+// وضعیت یک رسید واریز — باز و بسته شدن چرخه‌ی پرداخت
+enum DepositStatus {
+  PENDING // ثبت شده، منتظر تأیید گیرنده
+  APPROVED // تأیید شده و اشتراک مقصد تمدید شده
+  REJECTED // رد شده (مبلغ/رسید نادرست و ...) — دوباره می‌تواند ثبت کند
+}
+
+// مقصد یک تمدید: چه کسی/چه چیزی اشتراکش تمدید می‌شود
+// (USER → کاربرِ فردی؛ INSTITUTE → کل مؤسسه)
+enum DepositTargetKind {
+  USER
+  INSTITUTE
+}
+
+// رسید واریز: پرداخت‌کننده عکس رسید را می‌فرستد، صاحب کارت (مشاور/مدیر مؤسسه/سوپرادمین)
+// آن را می‌بیند و با تعیین دستی مدت (روز) تأیید می‌کند؛ در همان لحظه
+// اشتراک مقصد از max(الان، پایان فعلی) به اندازه‌ی همان روزها تمدید می‌شود.
+model DepositRequest {
+  id              String            @id @default(cuid())
+  // پرداخت‌کننده — هر کاربر لاگین‌شده‌ای می‌تواند رسید بفرستد
+  payerId         String
+  payer           User              @relation("DepositPayer", fields: [payerId], references: [id], onDelete: Cascade)
+  // صاحب کارت که باید تأیید کند (مشاور / مدیر مؤسسه / سوپرادمین)
+  ownerId         String
+  owner           User              @relation("DepositOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  // مقصد تمدید: اشتراک فردی کاربر یا اشتراک کل مؤسسه
+  targetKind      DepositTargetKind
+  targetId        String // userId یا instituteId
+  // عکس رسید به‌صورت data URL (همان الگوی عکس پروفایل/سؤال آزمون) حداکثر ~۵۰۰KB
+  receiptImageUrl String
+  amount          BigInt? // مبلغ واریزی اختیاری (ریال) — برای شفافیت
+  // توضیح کوتاه پرداخت‌کننده (مثل «تمدید ماهانه آبان»)
+  note            String?
+  status          DepositStatus     @default(PENDING)
+  // مدت تمدید (روز) که فقط موقع تأیید، توسط تأییدکننده تعیین می‌شود (۱ تا ۳۶۵)
+  approvedDays    Int?
+  // لحظه‌ی تأیید و تاریخ پایان جدید اشتراک مقصد (برای شفافیت و گزارش)
+  decidedAt       DateTime?
+  newEndsAt       DateTime?
+  // توضیح دلخواه تأییدکننده موقع رد (الزامی نیست)
+  decisionNote    String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([ownerId, status])
+  @@index([payerId, status])
+  @@index([targetKind, targetId])
 }
 
 // --- وضعیت انجام یک آیتم درسی در طول هفته ---
@@ -93,37 +195,37 @@ enum ItemStatus {
 
 // کاربر می‌تواند دانش‌آموز، مشاور یا سوپرادمین باشد
 model User {
-  id              String     @id @default(cuid())
-  fullName        String
-  email           String     @unique
-  passwordHash    String
-  role            UserRole   @default(STUDENT)
-  status          UserStatus @default(PENDING)
+  id                String     @id @default(cuid())
+  fullName          String
+  email             String     @unique
+  passwordHash      String
+  role              UserRole   @default(STUDENT)
+  status            UserStatus @default(PENDING)
   // زمان آخرین بازدید دانش‌آموز از برنامه‌اش؛ برای محاسبه‌ی «برنامه‌های تغییرکرده» استفاده می‌شود
-  plansLastViewedAt DateTime? @default(now())
+  plansLastViewedAt DateTime?  @default(now())
   // شماره تماس کاربر؛ برای ارتباط بین مشاور و دانش‌آموز استفاده می‌شود
   // در ثبت‌نام الزامی است (در پروفایل هم قابل ویرایش)
-  phone           String?
+  phone             String?
   // عکس پروفایل — به‌صورت data URL (base64) ذخیره می‌شود؛ اختیاری و حداکثر ~۵۰۰KB
   // عمداً جدا از فایل‌سیستم تا استقرار (Render) ساده بماند
-  photoUrl        String?
+  photoUrl          String?
   // توضیحات کوتاهی که کاربر (به‌ویژه مشاور) درباره‌ی خودش می‌دهد
   // برای مشاور، سوپرادمین قبل از تأیید/رد این توضیحات را می‌بیند
   // برای دانش‌آموز، می‌تواند اطلاعاتی مثل رشته، پایه، یا هدف کنکور را بنویسد
-  bio             String?
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
+  bio               String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
 
   // عضویت اختیاری در مؤسسه — null یعنی کاربر مستقل
-  instituteId String?
-  institute   Institute? @relation(fields: [instituteId], references: [id], onDelete: SetNull)
+  instituteId   String?
+  institute     Institute?  @relation(fields: [instituteId], references: [id], onDelete: SetNull)
   // مؤسسه‌هایی که این کاربر سردبیرشان است (معمولاً حداکثر یکی)
   ledInstitutes Institute[] @relation("InstituteLeader")
 
   // --- رمز یکبار مصرف (OTP) برای ورود وقتی کاربر رمزش را فراموش کرده ---
   // سوپرادمین یک OTP می‌سازد و به کاربر می‌دهد. کاربر با آن وارد می‌شود و سپس پاک می‌شود.
-  otpHash        String?
-  otpExpiresAt   DateTime?
+  otpHash      String?
+  otpExpiresAt DateTime?
 
   // --- اجبار به تغییر رمز بعد از ورود با OTP ---
   // وقتی سوپرادمین OTP می‌سازد: mustChangePassword=true می‌شود و passwordHash قبلی بی‌اعتبار می‌شود.
@@ -138,33 +240,42 @@ model User {
   field Field?
 
   // روابط مشاور ↔ دانش‌آموز
-  asAdvisorLinks  AdvisorStudentLink[] @relation("AdvisorSide")
-  asStudentLinks  AdvisorStudentLink[] @relation("StudentSide")
+  asAdvisorLinks AdvisorStudentLink[] @relation("AdvisorSide")
+  asStudentLinks AdvisorStudentLink[] @relation("StudentSide")
 
   // برنامه‌هایی که این کاربر به‌عنوان مشاور ساخته
-  plansAsAdvisor   StudyPlan[]  @relation("PlanAdvisor")
+  plansAsAdvisor StudyPlan[] @relation("PlanAdvisor")
   // برنامه‌هایی که این کاربر به‌عنوان دانش‌آموز دریافت کرده
-  plansAsStudent   StudyPlan[]  @relation("PlanStudent")
+  plansAsStudent StudyPlan[] @relation("PlanStudent")
 
   // تگ‌های شخصی مشاور
-  tags            Tag[]
+  tags Tag[]
 
   // یادآورهایی که فرستاده یا دریافت کرده
-  remindersSent   Reminder[]   @relation("ReminderAdvisor")
+  remindersSent     Reminder[] @relation("ReminderAdvisor")
   remindersReceived Reminder[] @relation("ReminderStudent")
 
   // آزمون‌هایی که به‌عنوان مشاور ساخته
-  examsCreated    Exam[]  @relation("ExamAdvisor")
+  examsCreated    Exam[]           @relation("ExamAdvisor")
   // آزمون‌هایی که به‌عنوان دانش‌آموز دریافت کرده
-  examsAssigned   Exam[]  @relation("ExamStudent")
+  examsAssigned   Exam[]           @relation("ExamStudent")
   // ارسال‌های آزمون دانش‌آموز
   examSubmissions ExamSubmission[] @relation("ExamSubmissionStudent")
 
   // توکن‌های بازنشانی رمز عبور (فراموشی رمز)
-  passwordResets  PasswordReset[]
+  passwordResets PasswordReset[]
 
   // رشته‌های تخصص مشاور (چندتا می‌تواند باشد) — فقط برای ADVISOR
-  advisorFields   AdvisorField[]
+  advisorFields AdvisorField[]
+
+  // --- اشتراک و پرداخت ---
+  // اشتراک فردی کاربر (مشاور مستقل / دانش‌آموز) — برای سوپرادمین ساخته نمی‌شود
+  subscription      UserSubscription?
+  // تنظیمات کارت واریز این کاربر (مشاور مستقل برای دانش‌آموزهایش ست می‌کند)
+  // در CardSettings با ownerKind='USER' و ownerId=this.id
+  // رسیدهایی که این کاربر فرستاده (پرداخت‌کننده) و رسیده‌هایی که باید تأیید کند (گیرنده)
+  depositsSent      DepositRequest[]  @relation("DepositPayer")
+  depositsToApprove DepositRequest[]  @relation("DepositOwner")
 
   @@index([instituteId])
 }
@@ -173,27 +284,27 @@ model User {
 // کاربر درخواست می‌دهد → توکن ساخته می‌شود → لینک با توکن به ایمیل می‌رود
 // → کاربر روی لینک کلیک می‌کند → رمز جدید را تنظیم می‌کند → توکن usedAt می‌شود
 model PasswordReset {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   email     String
-  token     String   @unique
+  token     String    @unique
   // زمان انقضا — معمولاً ۱ ساعت
   expiresAt DateTime
   // زمان استفاده — null یعنی هنوز استفاده نشده
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
-  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId    String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String?
 
   @@index([email])
 }
 
 // اتصال یک به چند بین مشاور و دانش‌آموز؛ دانش‌آموز فقط یک مشاور دارد
 model AdvisorStudentLink {
-  id        String   @id @default(cuid())
-  advisorId String
-  studentId String
-  createdAt DateTime @default(now())
+  id                String   @id @default(cuid())
+  advisorId         String
+  studentId         String
+  createdAt         DateTime @default(now())
   // هدف ساعت مطالعه‌ی هفتگی که مشاور برای این دانش‌آموز تعیین می‌کند (به دقیقه)
   // null یعنی هنوز هدفی تعیین نشده
   weeklyGoalMinutes Int?
@@ -202,10 +313,10 @@ model AdvisorStudentLink {
   //   PENDING  — دانش‌آموز درخواست داده، مشاور هنوز تصمیم نگرفته
   //   ACTIVE   — مشاور پذیرفته، می‌تواند برنامه/آزمون/یادآور بسازد
   //   REJECTED — مشاور رد کرده، دانش‌آموز باید مشاور دیگری انتخاب کند
-  status    AdvisorLinkStatus @default(PENDING)
+  status AdvisorLinkStatus @default(PENDING)
 
-  advisor   User     @relation("AdvisorSide",  fields: [advisorId],  references: [id], onDelete: Cascade)
-  student   User     @relation("StudentSide", fields: [studentId], references: [id], onDelete: Cascade)
+  advisor User @relation("AdvisorSide", fields: [advisorId], references: [id], onDelete: Cascade)
+  student User @relation("StudentSide", fields: [studentId], references: [id], onDelete: Cascade)
 
   @@unique([advisorId, studentId])
   @@index([advisorId])
@@ -216,12 +327,12 @@ model AdvisorStudentLink {
 // دانش‌آموز فقط یک رشته دارد (در User.field)؛ مشاور می‌تواند چند رشته داشته باشد.
 // منطق تطابق: رشته‌ی دانش‌آموز باید در لیست رشته‌های مشاور باشد.
 model AdvisorField {
-  id        String @id @default(cuid())
+  id        String   @id @default(cuid())
   userId    String
   field     Field
   createdAt DateTime @default(now())
 
-  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, field])
   @@index([userId])
@@ -230,15 +341,15 @@ model AdvisorField {
 
 // تگ‌های درسی؛ یا پیش‌فرض و سراسری‌اند یا شخصی برای یک مشاور
 model Tag {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   name      String
-  isDefault Boolean  @default(false)
+  isDefault Boolean @default(false)
   advisorId String?
 
-  advisor   User?    @relation(fields: [advisorId], references: [id], onDelete: Cascade)
-  items     PlanItemTag[]
+  advisor  User?         @relation(fields: [advisorId], references: [id], onDelete: Cascade)
+  items    PlanItemTag[]
   // لاگ‌های per-tag درون آیتم‌ها
-  itemLogs  PlanItemLog[]
+  itemLogs PlanItemLog[]
 
   @@index([advisorId])
 }
@@ -257,9 +368,9 @@ model StudyPlan {
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  student   User      @relation("PlanStudent", fields: [studentId], references: [id], onDelete: Cascade)
-  advisor   User      @relation("PlanAdvisor", fields: [advisorId], references: [id], onDelete: Cascade)
-  days      PlanDay[]
+  student User      @relation("PlanStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  advisor User      @relation("PlanAdvisor", fields: [advisorId], references: [id], onDelete: Cascade)
+  days    PlanDay[]
 
   @@index([studentId])
   @@index([advisorId])
@@ -267,12 +378,12 @@ model StudyPlan {
 
 // هر روز از هفته در یک برنامه؛ روز هفته ۰ تا ۶ (شنبه تا جمعه) است
 model PlanDay {
-  id        String     @id @default(cuid())
+  id        String @id @default(cuid())
   planId    String
-  dayOfWeek Int        // ۰=شنبه، ۱=یک‌شنبه، ... ۶=جمعه
+  dayOfWeek Int // ۰=شنبه، ۱=یک‌شنبه، ... ۶=جمعه
 
-  plan      StudyPlan  @relation(fields: [planId], references: [id], onDelete: Cascade)
-  items     PlanItem[]
+  plan  StudyPlan  @relation(fields: [planId], references: [id], onDelete: Cascade)
+  items PlanItem[]
 
   @@unique([planId, dayOfWeek])
   @@index([planId])
@@ -298,25 +409,25 @@ model PlanItem {
   // null یعنی هنوز ثبت نشده.
   // نکته: در نسخه‌ی ۷، ثبت per-tag با PlanItemLog اضافه شد، اما این فیلدها هم حفظ شده‌اند
   // تا هم backward-compatible باشد و هم امکان ثبت سریع per-item را بدهد.
-  actualMinutes Int?     // تعداد دقیقه‌ای که واقعاً مطالعه کرده
-  testsTaken    Int?     // تعداد تست‌هایی که در این بازه زده
+  actualMinutes Int? // تعداد دقیقه‌ای که واقعاً مطالعه کرده
+  testsTaken    Int? // تعداد تست‌هایی که در این بازه زده
 
-  day         PlanDay    @relation(fields: [dayId], references: [id], onDelete: Cascade)
-  tags        PlanItemTag[]
+  day      PlanDay       @relation(fields: [dayId], references: [id], onDelete: Cascade)
+  tags     PlanItemTag[]
   // لاگ‌های per-tag که دانش‌آموز برای این آیتم ثبت کرده
-  itemLogs    PlanItemLog[]
+  itemLogs PlanItemLog[]
 
   @@index([dayId])
 }
 
 // اتصال many-to-many بین آیتم و تگ
 model PlanItemTag {
-  id     String   @id @default(cuid())
+  id     String @id @default(cuid())
   itemId String
   tagId  String
 
-  item   PlanItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  tag    Tag      @relation(fields: [tagId],  references: [id], onDelete: Cascade)
+  item PlanItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  tag  Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
 
   @@unique([itemId, tagId])
   @@index([itemId])
@@ -329,21 +440,21 @@ model PlanItemTag {
 // ولی در تگ مشخصی جای نمی‌گیرد (کار اضافه روی این درس).
 // testsTaken معمولاً فقط برای تگ «تمرین» در UI وارد می‌شود، اما در دیتابیس برای هر لاگ قابل ثبت است.
 model PlanItemLog {
-  id          String   @id @default(cuid())
-  planItemId  String
+  id         String   @id @default(cuid())
+  planItemId String
   // null یعنی «سایر کارها» برای این آیتم
-  tagId       String?
+  tagId      String?
   // تعداد دقیقه‌ای که برای این تگ/کار در این آیتم صرف شده
-  minutes     Int
+  minutes    Int
   // تعداد تست‌های زده‌شده (در UI فقط برای تگ «تمرین» وارد می‌شود)
-  testsTaken  Int?
+  testsTaken Int?
   // توضیح اختیاری، مخصوصاً برای «سایر کارها»
-  note        String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  planItem    PlanItem @relation(fields: [planItemId], references: [id], onDelete: Cascade)
-  tag         Tag?     @relation(fields: [tagId], references: [id], onDelete: SetNull)
+  planItem PlanItem @relation(fields: [planItemId], references: [id], onDelete: Cascade)
+  tag      Tag?     @relation(fields: [tagId], references: [id], onDelete: SetNull)
 
   // نکته: یکتایی (planItemId, tagId) در سطح اپلیکیشن هندل می‌شود، نه در سطح دیتابیس،
   // چون tagId می‌تواند null باشد و در PostgreSQL NULL در unique constraint متمایز محسوب می‌شود.
@@ -353,16 +464,16 @@ model PlanItemLog {
 
 // یادآور متنی که مشاور برای دانش‌آموز می‌فرستد
 model Reminder {
-  id         String   @id @default(cuid())
-  advisorId  String
-  studentId  String
-  message    String
+  id        String    @id @default(cuid())
+  advisorId String
+  studentId String
+  message   String
   // زمان خوانده‌شدن یادآور توسط دانش‌آموز؛ null یعنی هنوز نخوانده
-  readAt     DateTime?
-  createdAt   DateTime @default(now())
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
 
-  advisor     User     @relation("ReminderAdvisor", fields: [advisorId],  references: [id], onDelete: Cascade)
-  student     User     @relation("ReminderStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  advisor User @relation("ReminderAdvisor", fields: [advisorId], references: [id], onDelete: Cascade)
+  student User @relation("ReminderStudent", fields: [studentId], references: [id], onDelete: Cascade)
 
   @@index([studentId])
   @@index([advisorId])
@@ -372,40 +483,40 @@ model Reminder {
 
 // نوع سؤال آزمون
 enum QuestionType {
-  MULTIPLE_CHOICE  // تستی (چهارگزینه‌ای)
-  DESCRIPTIVE      // تشریحی
+  MULTIPLE_CHOICE // تستی (چهارگزینه‌ای)
+  DESCRIPTIVE // تشریحی
 }
 
 // وضعیت یک ارسال آزمون توسط دانش‌آموز
 enum SubmissionStatus {
-  IN_PROGRESS  // شروع‌شده ولی هنوز ارسال نهایی نشده
-  SUBMITTED    // ارسال نهایی شده
-  GRADED       // نمره داده شده
+  IN_PROGRESS // شروع‌شده ولی هنوز ارسال نهایی نشده
+  SUBMITTED // ارسال نهایی شده
+  GRADED // نمره داده شده
 }
 
 // آزمونی که مشاور برای یک دانش‌آموز (یا همه‌ی دانش‌آموزهایش) می‌سازد
 model Exam {
-  id          String   @id @default(cuid())
-  title       String
-  description String?
-  studentId   String   // دانش‌آموزی که آزمون برای اوست
-  advisorId   String   // مشاوری که آزمون را ساخته
+  id               String    @id @default(cuid())
+  title            String
+  description      String?
+  studentId        String // دانش‌آموزی که آزمون برای اوست
+  advisorId        String // مشاوری که آزمون را ساخته
   // روز و زمان شروع آزمون — دانش‌آموز نمی‌تواند قبل از این زمان آزمون را شروع کند
-  scheduledAt DateTime
+  scheduledAt      DateTime
   // مدت آزمون به دقیقه
-  durationMinutes Int
+  durationMinutes  Int
   // آیا آزمون برای دانش‌آمور نمایش داده شود؟
   // اگر false باشد، آزمون تا زمان visibleFrom مخفی است
-  visibleToStudent Boolean @default(false)
+  visibleToStudent Boolean   @default(false)
   // زمانی که آزمون برای دانش‌آموز نمایش داده می‌شود (فقط اگر visibleToStudent=false باشد)
   // اگر null باشد، از scheduledAt استفاده می‌شود (یعنی تا زمان شروع آزمون مخفی است)
-  visibleFrom DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  visibleFrom      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  student    User     @relation("ExamStudent", fields: [studentId], references: [id], onDelete: Cascade)
-  advisor    User     @relation("ExamAdvisor", fields: [advisorId], references: [id], onDelete: Cascade)
-  questions  ExamQuestion[]
+  student     User             @relation("ExamStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  advisor     User             @relation("ExamAdvisor", fields: [advisorId], references: [id], onDelete: Cascade)
+  questions   ExamQuestion[]
   submissions ExamSubmission[]
 
   @@index([studentId])
@@ -415,24 +526,24 @@ model Exam {
 
 // سؤال آزمون
 model ExamQuestion {
-  id          String       @id @default(cuid())
-  examId      String
-  type        QuestionType
+  id            String       @id @default(cuid())
+  examId        String
+  type          QuestionType
   // متن سؤال — اگر عکس آپلود شود، اختیاری است
-  text        String?
+  text          String?
   // برای سؤالات تستی: گزینه‌ها با | جدا می‌شوند. مثلاً "گزینه ۱|گزینه ۲|گزینه ۳|گزینه ۴"
-  options     String?
+  options       String?
   // برای سؤالات تستی: شماره گزینه‌ی صحیح (۱ تا ۴). برای تشریحی null.
   correctOption Int?
   // نمره‌ی این سؤال (مثلاً ۱ یا ۲)
-  points      Int          @default(1)
+  points        Int          @default(1)
   // آدرس عکس سؤال (اختیاری) — می‌تواند صورت سؤال یا ضمیمه باشد
   // عکس در کلاینت به base64 تبدیل و مستقیم در دیتابیس ذخیره می‌شود
-  imageUrl    String?
-  order       Int          @default(0)
+  imageUrl      String?
+  order         Int          @default(0)
 
-  exam        Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
-  answers     ExamAnswer[]
+  exam    Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
+  answers ExamAnswer[]
 
   @@index([examId])
 }
@@ -443,7 +554,7 @@ model ExamSubmission {
   id          String           @id @default(cuid())
   examId      String
   studentId   String
-  status      SubmissionStatus  @default(IN_PROGRESS)
+  status      SubmissionStatus @default(IN_PROGRESS)
   // نمره‌ی کلی که مشاور داده (برای تشریحی)
   totalScore  Float?
   // حداکثر نمره‌ی ممکن
@@ -454,9 +565,9 @@ model ExamSubmission {
   submittedAt DateTime?
   gradedAt    DateTime?
 
-  exam        Exam             @relation(fields: [examId], references: [id], onDelete: Cascade)
-  student     User             @relation("ExamSubmissionStudent", fields: [studentId], references: [id], onDelete: Cascade)
-  answers     ExamAnswer[]
+  exam    Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
+  student User         @relation("ExamSubmissionStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  answers ExamAnswer[]
 
   @@index([examId])
   @@index([studentId])
@@ -464,20 +575,20 @@ model ExamSubmission {
 
 // پاسخ دانش‌آموز به یک سؤال
 model ExamAnswer {
-  id           String   @id @default(cuid())
-  submissionId String
-  questionId   String
+  id             String   @id @default(cuid())
+  submissionId   String
+  questionId     String
   // برای تستی: شماره گزینه‌ی انتخاب‌شده (۱ تا ۴). برای تشریحی null.
   selectedOption Int?
   // برای تشریحی: متن پاسخ دانش‌آموز. برای تستی null.
-  textAnswer   String?
+  textAnswer     String?
   // نمره‌ی این پاسخ (برای تشریحی، مشاور می‌دهد؛ برای تستی، خودکار محاسبه می‌شود)
-  score        Float?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  score          Float?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  submission   ExamSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
-  question     ExamQuestion   @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  submission ExamSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  question   ExamQuestion   @relation(fields: [questionId], references: [id], onDelete: Cascade)
 
   @@unique([submissionId, questionId])
   @@index([submissionId])
