@@ -78,7 +78,14 @@ async function listInstitutes(req, res, next) {
       },
       orderBy: { createdAt: 'desc' },
     });
-    res.json({ institutes });
+    // کارت واریز هر مؤسسه + کارت پلتفرم — رابطه‌ی polymorphic ندارد، جدا وصل می‌شود
+    const [instCards, systemCard] = await Promise.all([
+      prisma.cardSettings.findMany({ where: { ownerKind: 'INSTITUTE', ownerId: { in: institutes.map((i) => i.id) } } }),
+      prisma.cardSettings.findFirst({ where: { ownerKind: 'SYSTEM' } }),
+    ]);
+    const cardByInstitute = new Map(instCards.map((c) => [c.ownerId, c]));
+    const withCards = institutes.map((i) => ({ ...i, card: cardByInstitute.get(i.id) || null }));
+    res.json({ institutes: withCards, systemCard: systemCard || null });
   } catch (err) {
     next(err);
   }
@@ -860,13 +867,28 @@ async function setCardSettings(req, res, next) {
       return res.status(400).json({ error: 'نوع کارت نامعتبر است' });
     }
 
-    const card = await prisma.cardSettings.upsert({
-      where: { ownerKind_ownerId: { ownerKind: kind, ownerId } },
-      create: { ownerKind: kind, ownerId, cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
-      update: { cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
-    });
+    // نکته: برای کارت SYSTEM، ownerId قرار است null باشد و Prisma در where
+    // ترکیبی ownerKind_ownerId مقدار null را نمی‌پذیرد — پس SYSTEM را با findFirst
+    // و INSTITUTE را با upsert معمولی مدیریت می‌کنیم.
+    const card = kind === 'SYSTEM'
+      ? await prisma.cardSettings.findFirst({ where: { ownerKind: 'SYSTEM' } })
+      : null;
+    const saved = kind === 'SYSTEM'
+      ? (card
+        ? prisma.cardSettings.update({
+          where: { id: card.id },
+          data: { cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
+        })
+        : prisma.cardSettings.create({
+          data: { ownerKind: 'SYSTEM', ownerId: null, cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
+        }))
+      : await prisma.cardSettings.upsert({
+        where: { ownerKind_ownerId: { ownerKind: 'INSTITUTE', ownerId } },
+        create: { ownerKind: 'INSTITUTE', ownerId, cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
+        update: { cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
+      });
 
-    res.json({ message: 'شماره کارت ذخیره شد', card });
+    res.json({ message: 'شماره کارت ذخیره شد', card: saved });
   } catch (err) {
     next(err);
   }

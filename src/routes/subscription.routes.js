@@ -4,6 +4,7 @@ const { authenticate } = require('../middleware/auth.middleware');
 const { validate, schemas } = require('../utils/validators');
 const {
   getMySubscription,
+  getMyCard,
   setMyCard,
   getDepositContext,
   createDeposit,
@@ -17,6 +18,7 @@ const {
 // تا کاربرِ بلاک‌شده هم بتواند وضعیتش را ببیند و تمدید کند.
 
 router.get('/me', authenticate, getMySubscription);
+router.get('/me/card', authenticate, getMyCard);
 router.put('/me/card', authenticate, validate(schemas.cardSettings), setMyCard);
 router.get('/deposit-context', authenticate, getDepositContext);
 

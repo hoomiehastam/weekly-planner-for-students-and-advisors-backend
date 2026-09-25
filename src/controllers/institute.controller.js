@@ -105,10 +105,16 @@ async function listInstituteAdvisors(req, res, next) {
 async function approveMember(req, res, next) {
   try {
     const { id } = req.params;
+    // PENDING (درخواست جدید) و REJECTED (ردشده — دوباره قابل تأیید) هر دو پذیرفته می‌شوند؛
+    // وگرنه عضوِ ردشده برای همیشه گیر می‌کند و پیام «تأیید نشده» می‌بیند.
     const member = await prisma.user.findFirst({
-      where: { id, instituteId: req.instituteId, role: { in: ['ADVISOR', 'STUDENT'] }, status: 'PENDING' },
+      where: { id, instituteId: req.instituteId, role: { in: ['ADVISOR', 'STUDENT'] }, status: { in: ['PENDING', 'REJECTED'] } },
     });
     if (!member) {
+      const exists = await prisma.user.findFirst({ where: { id, instituteId: req.instituteId }, select: { status: true } });
+      if (exists && exists.status === 'ACTIVE') {
+        return res.status(400).json({ error: 'این عضو از قبل تأیید شده است' });
+      }
       return res.status(404).json({ error: 'درخواستی برای تأیید یافت نشد' });
     }
     // --- محدودیت ظرفیت: تأیید عضو جدید نباید سقف اشتراک را رد کند ---
@@ -170,7 +176,7 @@ async function listInstituteStudents(req, res, next) {
         asStudentLinks: {
           select: {
             status: true,
-            advisor: { select: { id: true, fullName: true } },
+            advisor: { select: { id: true, fullName: true, status: true } },
           },
         },
       },
@@ -222,6 +228,65 @@ async function removeMember(req, res, next) {
   }
 }
 
+// انتخاب/تغییر مشاور یک دانش‌آموز مؤسسه توسط مدیر (یا سردار) مؤسسه
+//   - دانش‌آموز بدون مشاور → درخواستِ قبول‌شده (ACTIVE) مستقیم ساخته می‌شود
+//   - دانش‌آموز با درخواست PENDING/REJECTED یا مشاور ACTIVE → لینک قبلی بسته و لینک جدید ساخته می‌شود
+// محدودیت‌ها:
+//   - مشاور باید عضو همین مؤسسه و ACTIVE باشد
+//   - ظرفیت مشاوران مؤسسه در اینجا چک نمی‌شود (مشاور جدید است، نه عضو جدید)
+//   - اختیاری: اگر field فرستاده شود، باید با رشته‌ی دانش‌آموز یا تخصص مشاور سازگار باشد؛
+//     تطابق کامل در ثبت‌نام خود دانش‌آموز انجام شده و اینجا بر عهده‌ی مدیر است.
+async function assignStudentAdvisor(req, res, next) {
+  try {
+    const { id } = req.params; // studentId
+    const { advisorId } = req.body;
+    if (!advisorId) {
+      return res.status(400).json({ error: 'انتخاب مشاور الزامی است' });
+    }
+
+    const [student, advisor] = await Promise.all([
+      prisma.user.findFirst({
+        where: { id, instituteId: req.instituteId, role: 'STUDENT' },
+        select: { id: true, fullName: true, status: true },
+      }),
+      prisma.user.findFirst({
+        where: { id: advisorId, instituteId: req.instituteId, role: 'ADVISOR', status: 'ACTIVE' },
+        select: { id: true, fullName: true, status: true },
+      }),
+    ]);
+    if (!student) return res.status(404).json({ error: 'دانش‌آموزی با این مشخصات در مؤسسه‌ی شما یافت نشد' });
+    if (!advisor) return res.status(400).json({ error: 'مشاور انتخابی باید عضو فعال همین مؤسسه باشد' });
+    if (advisor.id === student.id) return res.status(400).json({ error: 'نقش مشاور و دانش‌آموز متفاوت‌اند' });
+
+    // لینک‌های قبلی دانش‌آموز (هر وضعیتی) با مؤسسه‌ی مشاور جدید بسته می‌شوند تا یک لینک فعال بماند
+    const result = await prisma.$transaction(async (tx) => {
+      // اگر دقیقاً همین لینک ACTIVE وجود دارد، کاری نکن
+      const existingActive = await tx.advisorStudentLink.findFirst({
+        where: { studentId: student.id, advisorId: advisor.id, status: 'ACTIVE' },
+      });
+      if (existingActive) return { unchanged: true };
+
+      await tx.advisorStudentLink.updateMany({
+        where: { studentId: student.id, status: { in: ['PENDING', 'ACTIVE'] } },
+        data: { status: 'REJECTED' },
+      });
+      return tx.advisorStudentLink.create({
+        data: { studentId: student.id, advisorId: advisor.id, status: 'ACTIVE' },
+      });
+    });
+
+    if (result.unchanged) {
+      return res.json({ message: `«${student.fullName}» از قبل مشاور «${advisor.fullName}» را دارد`, advisor: { id: advisor.id, fullName: advisor.fullName } });
+    }
+    res.json({
+      message: `مشاور «${student.fullName}» به «${advisor.fullName}» تغییر کرد`,
+      advisor: { id: advisor.id, fullName: advisor.fullName },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   getInstituteMe,
   listInstituteAdvisors,
@@ -229,4 +294,5 @@ module.exports = {
   approveMember,
   rejectMember,
   removeMember,
+  assignStudentAdvisor,
 };

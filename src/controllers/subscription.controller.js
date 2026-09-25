@@ -65,13 +65,28 @@ async function setMyCard(req, res, next) {
   }
 }
 
+// ====== مشاهده‌ی شماره کارت واریز خودم ======
+// هر نقشی که بتواند مقصد پرداخت دیگران باشد (مشاور مستقل، مدیر مؤسسه، سوپرادمین)
+// با این اندپوینت کارت فعلی‌اش را می‌بیند و در صورت نیاز ویرایش می‌کند.
+async function getMyCard(req, res, next) {
+  try {
+    const card = await prisma.cardSettings.findFirst({
+      where: { ownerKind: 'USER', ownerId: req.user.id },
+    });
+    res.json({ card: card || null });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ====== زمینه‌ی صفحه‌ی واریز برای کاربر لاگین‌شده ======
 // تعیین می‌کند کاربر باید به کارت چه کسی واریز کند و تمدیدِ چه چیزی را می‌خرد:
-//   مشاور مستقل             → کارت سوپرادمین (SYSTEM)  → تمدید اشتراک خودش
-//   دانش‌آموز مستقل          → کارت مشاورش (USER)       → تمدید اشتراک خودش
-//   دانش‌آموز/مشاور مؤسسه‌ای  → کارت مؤسسه (INSTITUTE)   → تمدید اشتراک خودش
-//   مدیر مؤسسه/سردار         → کارت سوپرادمین (SYSTEM)  → تمدید اشتراک کل مؤسسه
-//   سوپرادمین                → چیزی برای پرداخت ندارد
+//   دانش‌آموز با مشاور مستقل      → کارت مشاورش (USER)       → تمدید اشتراک خودش
+//   دانش‌آموز با مشاور آموزشگاهی  → کارت مؤسسه (INSTITUTE)   → تمدید اشتراک خودش
+//   مشاور آموزشگاهی              → بدون کارت (اشتراکش با مؤسسه است — چیزی برای پرداخت ندارد)
+//   مدیر/سردار مؤسسه             → کارت سوپرادمین (SYSTEM)  → تمدید اشتراک کل مؤسسه
+//   مشاور مستقل                  → کارت سوپرادمین (SYSTEM)  → تمدید اشتراک خودش
+//   سوپرادمین                    → چیزی برای پرداخت ندارد (کارتش را در پنل مدیریت می‌گذارد)
 async function getDepositContext(req, res, next) {
   try {
     const user = await prisma.user.findUnique({
@@ -88,8 +103,10 @@ async function getDepositContext(req, res, next) {
     });
 
     // کارت سیستم (سوپرادمین)
-    const systemCard = await prisma.cardSettings.findUnique({
-      where: { ownerKind_ownerId: { ownerKind: 'SYSTEM', ownerId: null } },
+    // نکته: ownerKind_ownerId روی ownerId=null (کارت SYSTEM) با findUnique کار نمی‌کند
+    // (Prisma مقادیر null در where ترکیبی نمی‌پذیرد) — پس با findFirst می‌گیریم.
+    const systemCard = await prisma.cardSettings.findFirst({
+      where: { ownerKind: 'SYSTEM' },
     });
 
     let payee = null; // { kind: 'SYSTEM'|'INSTITUTE'|'USER', card, title, targetKind, targetId, targetTitle }
@@ -126,19 +143,38 @@ async function getDepositContext(req, res, next) {
       // دانش‌آموز مستقل → کارت مشاورش، مقصد: اشتراک فردی خودش
       const advisor = await prisma.user.findUnique({
         where: { id: user.asStudentLinks[0].advisorId },
-        select: { id: true, fullName: true },
+        select: { id: true, fullName: true, instituteId: true },
       });
-      const advisorCard = advisor && await prisma.cardSettings.findUnique({
-        where: { ownerKind_ownerId: { ownerKind: 'USER', ownerId: advisor.id } },
-      });
-      payee = {
-        kind: 'USER',
-        card: advisorCard,
-        title: `شماره کارت مشاور (${advisor?.fullName || ''})`.trim(),
-        targetKind: 'USER',
-        targetId: user.id,
-        targetTitle: 'اشتراک خودم',
-      };
+      if (advisor?.instituteId) {
+        // مشاورِ دانش‌آموز آموزشگاهی است → طبق قانون ارتباط، کارت مؤسسه نمایش داده می‌شود
+        const instCard = await prisma.cardSettings.findUnique({
+          where: { ownerKind_ownerId: { ownerKind: 'INSTITUTE', ownerId: advisor.instituteId } },
+        });
+        const inst = await prisma.institute.findUnique({ where: { id: advisor.instituteId }, select: { name: true } });
+        payee = {
+          kind: 'INSTITUTE',
+          card: instCard,
+          title: `شماره کارت مؤسسه ${inst?.name || ''}`.trim(),
+          targetKind: 'USER',
+          targetId: user.id,
+          targetTitle: 'اشتراک خودم',
+        };
+      } else {
+        const advisorCard = advisor && await prisma.cardSettings.findUnique({
+          where: { ownerKind_ownerId: { ownerKind: 'USER', ownerId: advisor.id } },
+        });
+        payee = {
+          kind: 'USER',
+          card: advisorCard,
+          title: `شماره کارت مشاور (${advisor?.fullName || ''})`.trim(),
+          targetKind: 'USER',
+          targetId: user.id,
+          targetTitle: 'اشتراک خودم',
+        };
+      }
+    } else if (user.role === 'ADVISOR' && user.instituteId) {
+      // مشاور آموزشگاهی → اشتراکش با اشتراک مؤسسه برقرار است؛ چیزی برای پرداخت ندارد
+      payee = null;
     } else {
       // مشاور مستقل → کارت سیستم، مقصد: اشتراک فردی خودش
       payee = {
@@ -190,7 +226,31 @@ async function createDeposit(req, res, next) {
             orderBy: { createdAt: 'desc' },
           });
           if (!link) return res.status(400).json({ error: 'برای تمدید، ابتدا به یک مشاور متصل شوید' });
-          ownerId = link.advisorId;
+          const myAdvisor = await prisma.user.findUnique({
+            where: { id: link.advisorId },
+            select: { instituteId: true },
+          });
+          if (req.user.instituteId) {
+            // دانش‌آموزِ مؤسسه‌ای → کارت مؤسسه را دیده و به آن واریز کرده؛
+            // تأیید با نماینده‌ی مؤسسه است (نه مشاور)
+            const inst = await prisma.institute.findUnique({ where: { id: req.user.instituteId } });
+            const manager = inst?.leaderId
+              ? await prisma.user.findUnique({ where: { id: inst.leaderId } })
+              : await prisma.user.findFirst({ where: { role: 'INSTITUTE_MANAGER', instituteId: inst.id } });
+            if (!manager) return res.status(400).json({ error: 'نماینده‌ای برای تأیید واریز مؤسسه‌ی شما تعیین نشده است' });
+            ownerId = manager.id;
+          } else if (myAdvisor?.instituteId) {
+            // مشاورِ من آموزشگاهی است → کارت مؤسسه‌ی او را دیده‌ام؛ تأیید با نماینده‌ی آن مؤسسه
+            const inst = await prisma.institute.findUnique({ where: { id: myAdvisor.instituteId } });
+            const manager = inst?.leaderId
+              ? await prisma.user.findUnique({ where: { id: inst.leaderId } })
+              : await prisma.user.findFirst({ where: { role: 'INSTITUTE_MANAGER', instituteId: inst.id } });
+            if (!manager) return res.status(400).json({ error: 'نماینده‌ای برای تأیید واریز مؤسسه تعیین نشده است' });
+            ownerId = manager.id;
+          } else {
+            // مشاور مستقل → خودش تأیید می‌کند
+            ownerId = link.advisorId;
+          }
         } else {
           // مشاور/مدیر: سوپرادمین تأیید می‌کند
           const superadmin = await prisma.user.findFirst({ where: { role: 'SUPERADMIN', status: 'ACTIVE' }, orderBy: { createdAt: 'asc' } });
@@ -387,6 +447,7 @@ async function serializeMany(deposits) {
 
 module.exports = {
   getMySubscription,
+  getMyCard,
   setMyCard,
   getDepositContext,
   createDeposit,
