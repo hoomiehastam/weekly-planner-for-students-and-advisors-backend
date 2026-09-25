@@ -55,6 +55,7 @@ async function listActiveAdvisors(req, res, next) {
       select: {
         id: true,
         fullName: true,
+        photoUrl: true,
         bio: true,
         field: true,
         // رشته‌های تخصص مشاور (چندتا)
@@ -73,6 +74,7 @@ async function listActiveAdvisors(req, res, next) {
       advisors: advisors.map((a) => ({
         id: a.id,
         fullName: a.fullName,
+        photoUrl: a.photoUrl || null,
         bio: a.bio,
         field: a.field, // برای backward compatibility
         fields: a.advisorFields.map((af) => af.field), // آرایه‌ی رشته‌ها
