@@ -109,14 +109,24 @@ async function getDepositContext(req, res, next) {
       where: { ownerKind: 'SYSTEM' },
     });
 
-    let payee = null; // { kind: 'SYSTEM'|'INSTITUTE'|'USER', card, title, targetKind, targetId, targetTitle }
+    let payee = null; // { kind: 'SYSTEM'|'INSTITUTE'|'USER', card, title, targetKind, targetId, targetTitle, monthlyPrice }
+
+    // مبلغ ماهانه‌ی مرتبط با کارت (تومان) — اولویت: کارت → مؤسسه → کاربر مقصد
+    // (سوپرادمین قیمت را می‌تواند روی کارت ست کند تا همه‌ی واریزکننده‌ها به آن کارت یک قیمت ببینند؛
+    //  در غیر این صورت قیمت اختصاصی مؤسسه یا کاربر استفاده می‌شود.)
+    function resolveMonthlyPrice(card, inst, targetUser) {
+      if (card && card.monthlyPrice != null) return card.monthlyPrice;
+      if (inst && inst.monthlyPrice != null) return inst.monthlyPrice;
+      if (targetUser && targetUser.monthlyPrice != null) return targetUser.monthlyPrice;
+      return null;
+    }
 
     // مدیر/سردار مؤسسه → کارت سیستم، مقصد: کل مؤسسه
     const isManager = user.role === 'INSTITUTE_MANAGER' || (await prisma.institute.findFirst({ where: { leaderId: user.id }, select: { id: true } }));
     if (user.role === 'SUPERADMIN') {
       payee = null;
     } else if (isManager && user.instituteId) {
-      const inst = await prisma.institute.findUnique({ where: { id: user.instituteId }, select: { id: true, name: true } });
+      const inst = await prisma.institute.findUnique({ where: { id: user.instituteId }, select: { id: true, name: true, monthlyPrice: true } });
       payee = {
         kind: 'SYSTEM',
         card: systemCard,
@@ -124,13 +134,14 @@ async function getDepositContext(req, res, next) {
         targetKind: 'INSTITUTE',
         targetId: user.instituteId,
         targetTitle: inst?.name,
+        monthlyPrice: resolveMonthlyPrice(systemCard, inst, null),
       };
     } else if (user.instituteId) {
       // عضو مؤسسه → کارت مؤسسه، مقصد: اشتراک فردی خودش
       const instCard = await prisma.cardSettings.findUnique({
         where: { ownerKind_ownerId: { ownerKind: 'INSTITUTE', ownerId: user.instituteId } },
       });
-      const inst = await prisma.institute.findUnique({ where: { id: user.instituteId }, select: { id: true, name: true } });
+      const inst = await prisma.institute.findUnique({ where: { id: user.instituteId }, select: { id: true, name: true, monthlyPrice: true } });
       payee = {
         kind: 'INSTITUTE',
         card: instCard,
@@ -138,6 +149,7 @@ async function getDepositContext(req, res, next) {
         targetKind: 'USER',
         targetId: user.id,
         targetTitle: 'اشتراک خودم',
+        monthlyPrice: resolveMonthlyPrice(instCard, inst, user),
       };
     } else if (user.role === 'STUDENT' && user.asStudentLinks[0]) {
       // دانش‌آموز مستقل → کارت مشاورش، مقصد: اشتراک فردی خودش
@@ -150,7 +162,7 @@ async function getDepositContext(req, res, next) {
         const instCard = await prisma.cardSettings.findUnique({
           where: { ownerKind_ownerId: { ownerKind: 'INSTITUTE', ownerId: advisor.instituteId } },
         });
-        const inst = await prisma.institute.findUnique({ where: { id: advisor.instituteId }, select: { name: true } });
+        const inst = await prisma.institute.findUnique({ where: { id: advisor.instituteId }, select: { name: true, monthlyPrice: true } });
         payee = {
           kind: 'INSTITUTE',
           card: instCard,
@@ -158,6 +170,7 @@ async function getDepositContext(req, res, next) {
           targetKind: 'USER',
           targetId: user.id,
           targetTitle: 'اشتراک خودم',
+          monthlyPrice: resolveMonthlyPrice(instCard, inst, user),
         };
       } else {
         const advisorCard = advisor && await prisma.cardSettings.findUnique({
@@ -170,6 +183,7 @@ async function getDepositContext(req, res, next) {
           targetKind: 'USER',
           targetId: user.id,
           targetTitle: 'اشتراک خودم',
+          monthlyPrice: resolveMonthlyPrice(advisorCard, null, user),
         };
       }
     } else if (user.role === 'ADVISOR' && user.instituteId) {
@@ -184,6 +198,7 @@ async function getDepositContext(req, res, next) {
         targetKind: 'USER',
         targetId: user.id,
         targetTitle: 'اشتراک خودم',
+        monthlyPrice: resolveMonthlyPrice(systemCard, null, user),
       };
     }
 
@@ -322,30 +337,74 @@ async function listIncomingDeposits(req, res, next) {
 }
 
 // ====== تأیید رسید و تمدید خودکار اشتراک ======
-// فقط صاحب کارت (ownerId) حق تأیید دارد. مدت تمدید (روز) دستی تعیین می‌شود و
-// اشتراک مقصد از دیرترِ (الان، پایان فعلی) جلو می‌رود — تمدید روی تمدید انباشته می‌شود.
+// فقط صاحب کارت (ownerId) حق تأیید دارد. مدت تمدید (روز) به یکی از دو روش تعیین می‌شود:
+//   ۱) اگر مبلغ واریزی ثبت شده باشد → بر اساس مبلغ ماهانه (قیمت) محاسبه‌ی خودکار:
+//      round(مبلغ ÷ قیمت ماهانه × ۳۰ روز) — در بازه‌ی ۱ تا ۳۶۵۰ روز محدود می‌شود.
+//   ۲) اگر مبلغ واریزی یا قیمت ثبت نشده باشد → مدت از بدنه‌ی درخواست (days) خوانده می‌شود.
+// تأییدکننده می‌تواند مبلغ واریزی را (اگر اشتباه بود) قبل از تأیید اصلاح کند؛
+// سپس با همان مبلغ اصلاح‌شده روزها دوباره محاسبه می‌شوند.
 async function approveDeposit(req, res, next) {
   try {
     const { id } = req.params;
-    const { days, decisionNote } = req.body;
-    if (!days) return res.status(400).json({ error: 'مدت تمدید (روز) الزامی است' });
+    const { days, decisionNote, amount } = req.body;
 
     const deposit = await prisma.depositRequest.findUnique({ where: { id } });
     if (!deposit) return res.status(404).json({ error: 'رسید یافت نشد' });
     if (deposit.ownerId !== req.user.id) return res.status(403).json({ error: 'فقط گیرنده‌ی پرداخت می‌تواند این رسید را تأیید کند' });
     if (deposit.status !== 'PENDING') return res.status(400).json({ error: 'این رسید قبلاً بررسی شده است' });
 
-    const newEndsAt = await extendSubscription(deposit.targetKind, deposit.targetId, days, `DEPOSIT:${deposit.id}`);
+    // اصلاح مبلغ واریزی توسط تأییدکننده (اگر پرداخت‌کننده اشتباه وارد کرده باشد)
+    let effectiveAmount = deposit.amount != null ? Number(deposit.amount) : null;
+    if (amount !== undefined && amount !== null && amount !== '') {
+      const corrected = Number(amount);
+      if (!Number.isInteger(corrected) || corrected < 0) {
+        return res.status(400).json({ error: 'مبلغ اصلاح‌شده باید عدد صحیح غیرمنفی باشد' });
+      }
+      effectiveAmount = corrected;
+    }
+
+    // قیمت ماهانه برای محاسبه‌ی خودکار روزها (تومان)
+    const monthlyPrice = await resolveMonthlyPriceForDeposit(deposit);
+
+    // محاسبه‌ی روزها: اولویت با محاسبه‌ی خودکار از مبلغ؛ در نبودِ مبلغ یا قیمت، days دستی
+    let finalDays;
+    let autoCalculated = false;
+    if (effectiveAmount != null && monthlyPrice != null && monthlyPrice > 0) {
+      finalDays = Math.round((effectiveAmount / monthlyPrice) * 30);
+      autoCalculated = true;
+      if (finalDays < 1) {
+        return res.status(400).json({
+          error: `مبلغ ${effectiveAmount.toLocaleString('fa-IR')} تومان برای قیمت ماهانه‌ی ${monthlyPrice.toLocaleString('fa-IR')} تومانی کمتر از یک روز است؛ مبلغ را اصلاح کنید یا مدت را دستی وارد کنید`,
+        });
+      }
+    } else if (days) {
+      const d = Number(days);
+      if (!Number.isInteger(d) || d < 1 || d > 3650) {
+        return res.status(400).json({ error: 'مدت تمدید باید عدد صحیح بین ۱ تا ۳۶۵۰ باشد' });
+      }
+      finalDays = d;
+    } else {
+      return res.status(400).json({ error: 'برای تأیید، مبلغ واریزی یا مدت تمدید (روز) لازم است' });
+    }
+    finalDays = Math.min(finalDays, 3650);
+
+    // ثبت مبلغ اصلاح‌شده روی رسید (برای شفافیت تاریخچه)
+    if (effectiveAmount != null && (deposit.amount == null || Number(deposit.amount) !== effectiveAmount)) {
+      await prisma.depositRequest.update({ where: { id }, data: { amount: BigInt(effectiveAmount) } });
+    }
+
+    const newEndsAt = await extendSubscription(deposit.targetKind, deposit.targetId, finalDays, `DEPOSIT:${deposit.id}`);
 
     const updated = await prisma.depositRequest.update({
       where: { id },
-      data: { status: 'APPROVED', approvedDays: days, decidedAt: new Date(), newEndsAt, decisionNote: decisionNote || null },
+      data: { status: 'APPROVED', approvedDays: finalDays, decidedAt: new Date(), newEndsAt, decisionNote: decisionNote || null },
     });
 
     res.json({
-      message: `رسید تأیید شد؛ اشتراک ${days} روز تمدید شد`,
+      message: `رسید تأیید شد؛ اشتراک ${finalDays} روز تمدید شد${autoCalculated ? ' (محاسبه‌ی خودکار بر اساس مبلغ)' : ''}`,
       deposit: serializeDeposit(updated),
       newEndsAt,
+      days: finalDays,
     });
   } catch (err) {
     next(err);
@@ -375,6 +434,30 @@ async function rejectDeposit(req, res, next) {
 }
 
 // ====== توابع کمکی ======
+
+// قیمت ماهانه‌ی مرتبط با یک رسید (تومان) برای محاسبه‌ی خودکار روزهای تمدید.
+// اولویت: قیمت روی کارت صاحب → قیمت مؤسسه (مقصد مؤسسه‌ای یا مؤسسه‌ی صاحب) → قیمت کاربر مقصد.
+async function resolveMonthlyPriceForDeposit(deposit) {
+  try {
+    const ownerCard = await prisma.cardSettings.findFirst({ where: { ownerKind: 'USER', ownerId: deposit.ownerId } });
+    if (ownerCard?.monthlyPrice != null) return ownerCard.monthlyPrice;
+
+    if (deposit.targetKind === 'INSTITUTE') {
+      const inst = await prisma.institute.findUnique({ where: { id: deposit.targetId }, select: { monthlyPrice: true } });
+      if (inst?.monthlyPrice != null) return inst.monthlyPrice;
+    } else {
+      const targetUser = await prisma.user.findUnique({ where: { id: deposit.targetId }, select: { monthlyPrice: true, instituteId: true } });
+      if (targetUser?.monthlyPrice != null) return targetUser.monthlyPrice;
+      if (targetUser?.instituteId) {
+        const inst = await prisma.institute.findUnique({ where: { id: targetUser.instituteId }, select: { monthlyPrice: true } });
+        if (inst?.monthlyPrice != null) return inst.monthlyPrice;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 // تمدید اشتراک USER یا INSTITUTE از دیرترِ (الان، پایان فعلی) به‌اندازه‌ی days روز.
 // رکورد نبود؟ ساخته می‌شود (ACTIVE با همین تاریخ پایان).

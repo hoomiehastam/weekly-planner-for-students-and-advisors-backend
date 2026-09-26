@@ -471,6 +471,8 @@ const PLAN_INCLUDE = {
 // دانش‌آموز برای هر تگ (یا «سایر» با tagId=null) می‌تواند دقیقه و تعداد تست ثبت کند.
 // اگر لاگی برای این (itemId, tagId) از قبل وجود داشته باشد، به‌روزرسانی می‌شود؛
 // در غیر این‌صورت ساخته می‌شود (upsert).
+// نکته: لاگ با دقیقه‌ی ۰ حذف می‌شود «مگر اینکه» testsTaken یا note داشته باشد —
+// اینطوری ثبتِ فقطِ تعداد تست (بدون زمان) هم ممکن است.
 // بدنه‌ی درخواست:
 //   { tagId?: string|null, minutes: number, testsTaken?: number|null, note?: string }
 async function setItemTagLog(req, res, next) {
@@ -511,6 +513,11 @@ async function setItemTagLog(req, res, next) {
       testsValue = t;
     }
 
+    const noteValue = note ? String(note).trim().slice(0, 280) : null;
+
+    // اگر دقیقه‌ی ۰ ارسال شد ولی تست یا توضیح دارد، لاگ نگه داشته می‌شود (ثبتِ فقط تست)
+    const keepWithZeroMinutes = mins === 0 && (testsValue !== null || noteValue !== null);
+
     // upsert: اگر لاگی برای این (itemId, tagId) هست، به‌روزرسانی کن؛ وگرنه بساز
     // نکته: از findFirst استفاده می‌کنیم چون tagId می‌تواند null باشد و
     // در PostgreSQL NULL در unique constraint متمایز محسوب می‌شود.
@@ -520,8 +527,7 @@ async function setItemTagLog(req, res, next) {
 
     let log;
     if (existing) {
-      // اگر دقیقه ۰ ارسال شد، لاگ را حذف کن
-      if (mins === 0) {
+      if (mins === 0 && !keepWithZeroMinutes) {
         await prisma.planItemLog.delete({ where: { id: existing.id } });
         return res.json({ log: null, deleted: true });
       }
@@ -530,13 +536,13 @@ async function setItemTagLog(req, res, next) {
         data: {
           minutes: mins,
           testsTaken: testsValue,
-          note: note ? String(note).trim().slice(0, 280) : null,
+          note: noteValue,
         },
         include: { tag: true },
       });
     } else {
-      if (mins === 0) {
-        // چیزی برای حذف نیست
+      if (mins === 0 && !keepWithZeroMinutes) {
+        // چیزی برای ساختن نیست
         return res.json({ log: null, deleted: false });
       }
       log = await prisma.planItemLog.create({
@@ -545,7 +551,7 @@ async function setItemTagLog(req, res, next) {
           tagId: tagId || null,
           minutes: mins,
           testsTaken: testsValue,
-          note: note ? String(note).trim().slice(0, 280) : null,
+          note: noteValue,
         },
         include: { tag: true },
       });

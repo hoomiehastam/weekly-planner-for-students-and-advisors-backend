@@ -120,10 +120,12 @@ const createDepositSchema = z.object({
   note: optionalText(300),
 });
 
-// تأیید/رد رسید توسط صاحب کارت — مدت تمدید دستی تعیین می‌شود
+// تأیید/رد رسید توسط صاحب کارت — مدت تمدید معمولاً از مبلغ و قیمت ماهانه خودکار محاسبه
+// می‌شود؛ days فقط وقتی لازم است که مبلغ یا قیمت ثبت نشده باشد. amount = اصلاح مبلغ واریزی.
 const decideDepositSchema = z.object({
   days: z.number().int('مدت تمدید باید عدد صحیح باشد').min(1, 'حداقل ۱ روز').max(3650, 'حداکثر ۳۶۵۰ روز')
     .optional(),
+  amount: z.coerce.number().int('مبلغ باید عدد صحیح باشد').min(0).max(10000000000).optional(),
   decisionNote: optionalText(300),
 });
 
@@ -141,6 +143,12 @@ const updateUserSubscriptionSchema = z.object({
 const updateInstituteLimitsSchema = z.object({
   maxAdvisors: z.number().int().min(0).max(100000).nullable(),
   maxStudents: z.number().int().min(0).max(100000).nullable(),
+});
+
+// تنظیم مبلغ ماهانه‌ی اشتراک (کاربر یا مؤسسه) — به تومان؛ null یعنی حذف قیمت
+const monthlyPriceSchema = z.object({
+  monthlyPrice: z.coerce.number().int('مبلغ ماهانه باید عدد صحیح باشد').min(0).max(10000000000)
+    .nullable(),
 });
 
 const profileSchema = z.object({
@@ -211,6 +219,7 @@ module.exports = {
     updateInstituteSubscription: updateInstituteSubscriptionSchema,
     updateUserSubscription: updateUserSubscriptionSchema,
     updateInstituteLimits: updateInstituteLimitsSchema,
+    monthlyPrice: monthlyPriceSchema,
     cardSettings: cardSettingsSchema,
     createDeposit: createDepositSchema,
     decideDeposit: decideDepositSchema,
@@ -218,11 +227,5 @@ module.exports = {
     assignAdvisorFields: assignAdvisorFieldsSchema,
     setLeader: setLeaderSchema,
     createOtp: createOtpSchema,
-    updateInstituteSubscription: updateInstituteSubscriptionSchema,
-    updateUserSubscription: updateUserSubscriptionSchema,
-    updateInstituteLimits: updateInstituteLimitsSchema,
-    cardSettings: cardSettingsSchema,
-    createDeposit: createDepositSchema,
-    decideDeposit: decideDepositSchema,
   },
 };

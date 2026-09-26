@@ -24,6 +24,8 @@ const {
   setInstituteLeader,
   updateUserSubscription,
   updateInstituteLimits,
+  updateUserMonthlyPrice,
+  updateInstituteMonthlyPrice,
   setCardSettings,
 } = require('../controllers/admin.controller');
 const { validate, schemas } = require('../utils/validators');
@@ -85,5 +87,11 @@ router.put('/card/system', validate(schemas.cardSettings), (req, res, next) => {
 
 // تنظیم اشتراک فردی کاربر (مشاور مستقل / دانش‌آموز) — مثل اشتراک مؤسسه
 router.put('/users/:id/subscription', validate(schemas.updateUserSubscription), updateUserSubscription);
+
+// تنظیم مبلغ ماهانه‌ی اشتراک کاربر (دانش‌آموز/مشاور) — body: { monthlyPrice: number|null }
+router.put('/users/:id/monthly-price', validate(schemas.monthlyPrice), updateUserMonthlyPrice);
+
+// تنظیم مبلغ ماهانه‌ی اشتراک مؤسسه — body: { monthlyPrice: number|null }
+router.put('/institutes/:id/monthly-price', validate(schemas.monthlyPrice), updateInstituteMonthlyPrice);
 
 module.exports = router;

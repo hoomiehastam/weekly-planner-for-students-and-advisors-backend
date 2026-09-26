@@ -71,6 +71,8 @@ async function listInstitutes(req, res, next) {
         code: true,
         status: true,
         createdAt: true,
+        // مبلغ ماهانه‌ی اشتراک مؤسسه (تومان) — توسط سوپرادمین تعیین می‌شود
+        monthlyPrice: true,
         subscription: { select: { status: true, tier: true, endsAt: true, maxAdvisors: true, maxStudents: true } },
         // نماینده‌ی فعلی (سردار) — سوپرادمین او را تعیین می‌کند
         leader: { select: { id: true, fullName: true } },
@@ -194,6 +196,8 @@ async function listAdvisorsOverview(req, res, next) {
         advisorFields: { select: { field: true } },
         // اشتراک فردی — سوپرادمین برای تمدید/قطع پنل مشاور آن را ویرایش می‌کند
         subscription: { select: { status: true, tier: true, endsAt: true } },
+        // مبلغ ماهانه‌ی تعیین‌شده برای این مشاور (تومان)
+        monthlyPrice: true,
         asAdvisorLinks: {
           // فقط اتصال‌های ACTIVE — درخواست‌های PENDING هنوز دانش‌آموزِ مشاور نیستند
           // و نباید در فهرست دانش‌آموزان او نمایش داده شوند
@@ -658,6 +662,8 @@ async function listStudentsOverview(req, res, next) {
         institute: { select: { id: true, name: true } },
         // اشتراک فردی دانش‌آموز — سوپرادمین می‌تواند دستی تمدید کند
         subscription: { select: { status: true, tier: true, endsAt: true } },
+        // مبلغ ماهانه‌ی تعیین‌شده برای این دانش‌آموز (تومان)
+        monthlyPrice: true,
         asStudentLinks: {
           select: {
             status: true,
@@ -843,6 +849,65 @@ async function updateInstituteLimits(req, res, next) {
   }
 }
 
+// ====== تنظیم مبلغ ماهانه‌ی اشتراک یک کاربر (دانش‌آموز/مشاور) توسط سوپرادمین ======
+// body: { monthlyPrice: number|null } — به تومان؛ null یعنی حذف قیمت (مدت تمدید دستی تعیین می‌شود)
+// دانش‌آموز/مشاور این مبلغ را در صفحه‌ی واریز می‌بیند و مبنای محاسبه‌ی خودکار
+// روزهای تمدید هنگام تأیید رسید است (مبلغ واریزی ÷ قیمت ماهانه × ۳۰ روز).
+async function updateUserMonthlyPrice(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { monthlyPrice } = req.body;
+
+    const user = await prisma.user.findUnique({ where: { id } });
+    if (!user) return res.status(404).json({ error: 'کاربر یافت نشد' });
+    if (user.role === 'SUPERADMIN') {
+      return res.status(400).json({ error: 'سوپرادمین به اشتراک و قیمت‌گذاری نیاز ندارد' });
+    }
+
+    const price = monthlyPrice === null || monthlyPrice === undefined || monthlyPrice === ''
+      ? null
+      : Number(monthlyPrice);
+    if (price !== null && (!Number.isInteger(price) || price < 0 || price > 10000000000)) {
+      return res.status(400).json({ error: 'مبلغ ماهانه باید عدد صحیح غیرمنفی باشد' });
+    }
+
+    const updated = await prisma.user.update({ where: { id }, data: { monthlyPrice: price } });
+    res.json({
+      message: price != null ? `مبلغ ماهانه‌ی «${updated.fullName}» به ${price.toLocaleString('fa-IR')} تومان تنظیم شد` : `مبلغ ماهانه‌ی «${updated.fullName}» حذف شد`,
+      monthlyPrice: updated.monthlyPrice,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ====== تنظیم مبلغ ماهانه‌ی اشتراک مؤسسه توسط سوپرادمین ======
+// body: { monthlyPrice: number|null } — به تومان؛ null یعنی حذف قیمت.
+async function updateInstituteMonthlyPrice(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { monthlyPrice } = req.body;
+
+    const institute = await prisma.institute.findUnique({ where: { id } });
+    if (!institute) return res.status(404).json({ error: 'مؤسسه یافت نشد' });
+
+    const price = monthlyPrice === null || monthlyPrice === undefined || monthlyPrice === ''
+      ? null
+      : Number(monthlyPrice);
+    if (price !== null && (!Number.isInteger(price) || price < 0 || price > 10000000000)) {
+      return res.status(400).json({ error: 'مبلغ ماهانه باید عدد صحیح غیرمنفی باشد' });
+    }
+
+    await prisma.institute.update({ where: { id }, data: { monthlyPrice: price } });
+    res.json({
+      message: price != null ? `مبلغ ماهانه‌ی مؤسسه‌ی «${institute.name}» به ${price.toLocaleString('fa-IR')} تومان تنظیم شد` : `مبلغ ماهانه‌ی مؤسسه‌ی «${institute.name}» حذف شد`,
+      monthlyPrice: price,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ====== تنظیم/ویرایش کارت واریز مؤسسه یا کارت پلتفرم توسط سوپرادمین ======
 // body: { kind: 'INSTITUTE'|'SYSTEM', cardNumber, shaba?, holderName? }
 async function setCardSettings(req, res, next) {
@@ -866,10 +931,19 @@ async function setCardSettings(req, res, next) {
     if (kind !== 'INSTITUTE' && kind !== 'SYSTEM') {
       return res.status(400).json({ error: 'نوع کارت نامعتبر است' });
     }
+    // مبلغ ماهانه‌ی اختیاری روی کارت — null/خالی یعنی حذف قیمت
+    let monthlyPrice = null;
+    if (req.body.monthlyPrice !== null && req.body.monthlyPrice !== undefined && req.body.monthlyPrice !== '') {
+      monthlyPrice = Number(req.body.monthlyPrice);
+      if (!Number.isInteger(monthlyPrice) || monthlyPrice < 0 || monthlyPrice > 10000000000) {
+        return res.status(400).json({ error: 'مبلغ ماهانه باید عدد صحیح غیرمنفی باشد' });
+      }
+    }
 
     // نکته: برای کارت SYSTEM، ownerId قرار است null باشد و Prisma در where
     // ترکیبی ownerKind_ownerId مقدار null را نمی‌پذیرد — پس SYSTEM را با findFirst
     // و INSTITUTE را با upsert معمولی مدیریت می‌کنیم.
+    const cardData = { cardNumber: normalized, shaba: shaba || null, holderName: holderName || null, monthlyPrice };
     const card = kind === 'SYSTEM'
       ? await prisma.cardSettings.findFirst({ where: { ownerKind: 'SYSTEM' } })
       : null;
@@ -877,15 +951,15 @@ async function setCardSettings(req, res, next) {
       ? (card
         ? prisma.cardSettings.update({
           where: { id: card.id },
-          data: { cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
+          data: cardData,
         })
         : prisma.cardSettings.create({
-          data: { ownerKind: 'SYSTEM', ownerId: null, cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
+          data: { ownerKind: 'SYSTEM', ownerId: null, ...cardData },
         }))
       : await prisma.cardSettings.upsert({
         where: { ownerKind_ownerId: { ownerKind: 'INSTITUTE', ownerId } },
-        create: { ownerKind: 'INSTITUTE', ownerId, cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
-        update: { cardNumber: normalized, shaba: shaba || null, holderName: holderName || null },
+        create: { ownerKind: 'INSTITUTE', ownerId, ...cardData },
+        update: cardData,
       });
 
     res.json({ message: 'شماره کارت ذخیره شد', card: saved });
@@ -917,5 +991,7 @@ module.exports = {
   setInstituteLeader,
   updateUserSubscription,
   updateInstituteLimits,
+  updateUserMonthlyPrice,
+  updateInstituteMonthlyPrice,
   setCardSettings,
 };
