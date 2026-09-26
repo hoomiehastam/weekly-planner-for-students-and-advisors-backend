@@ -6,12 +6,43 @@ const prisma = require('../config/prisma');
 // اعتبارسنجی ساده‌ی فرمت ساعت (HH:MM)؛ در صورت خالی بودن هم عبور می‌کند
 function validateTime(value) {
   if (value === null || value === undefined || value === '') return null;
-  const v = String(value).trim();
+  // نرمال‌سازی ارقام فارسی/عربی به لاتین — کاربر با کیبورد فارسی هم بتواند ساعت بنویسد
+  const FA = '۰۱۲۳۴۵۶۷۸۹';
+  const AR = '٠١٢٣٤٥٦٧٨٩';
+  const v = String(value).trim()
+    .replace(/[۰-۹]/g, (d) => String(FA.indexOf(d)))
+    .replace(/[٠-٩]/g, (d) => String(AR.indexOf(d)));
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) {
     throw new Error('فرمت ساعت معتبر نیست؛ باید به شکل HH:MM باشد (مثل 08:30)');
   }
   return v;
 }
+
+// --- اعتبارسنجی همپوشانی بازه‌های ساعتی در یک روز ---
+// یک نفر نمی‌تواند همزمان دو درس را بخواند؛ پس بازه‌های زمان‌دارِ یک روز
+// نباید روی هم بیفتند. بازه‌های بی‌زمان آزادند.
+// در صورت همپوشانی، خطا با نام درس‌ها و بازه‌ها پرتاب می‌شود.
+function assertNoOverlap(days, DAY_NAMES) {
+  for (const d of days) {
+    const timed = (d.items || [])
+      .filter((it) => it.startTime && it.endTime)
+      .map((it) => ({ subject: it.subject || 'بدون نام', start: it.startTime, end: it.endTime }))
+      .sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+    for (let i = 1; i < timed.length; i++) {
+      const prev = timed[i - 1];
+      const cur = timed[i];
+      if (cur.start < prev.end) {
+        const dayName = DAY_NAMES[d.dayOfWeek] || `روز ${d.dayOfWeek}`;
+        throw new Error(
+          `در ${dayName} بازه‌ی «${prev.subject}» (${prev.start}–${prev.end}) با «${cur.subject}» (${cur.start}–${cur.end}) همپوشانی دارد`
+        );
+      }
+    }
+  }
+}
+
+// نام روزهای هفته برای پیام‌های خطا
+const DAY_NAMES = ['شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه'];
 
 // اعتبارسنجی روز هفته ۰ تا ۶
 function validateDayOfWeek(value) {
@@ -84,6 +115,9 @@ async function replaceDays(tx, { planId, advisorId, days }) {
     dayOfWeek: validateDayOfWeek(d.dayOfWeek),
     items: (d.items || []).map((it, idx) => toItemInput(it, idx)),
   }));
+
+  // اعتبارسنجی همپوشانی بازه‌های ساعتی هر روز (پیام خطا به کلاینت برمی‌گردد)
+  assertNoOverlap(incomingDays, DAY_NAMES);
 
   // اعتبارسنجی متمرکز همه‌ی تگ‌ها قبل از هر تغییری
   for (const day of incomingDays) {
@@ -177,6 +211,16 @@ async function createPlan(req, res, next) {
 
     if (!studentId || !title || !startsAt) {
       return res.status(400).json({ error: 'شناسه‌ی دانش‌آموز، عنوان و تاریخ شروع الزامی هستند' });
+    }
+
+    // اعتبارسنجی همپوشانی بازه‌های ساعتی هر روز
+    try {
+      assertNoOverlap(
+        days.map((d) => ({ dayOfWeek: d.dayOfWeek, items: (d.items || []).map((it) => toItemInput(it, 0)) })),
+        DAY_NAMES
+      );
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
     }
 
     // اطمینان از اینکه این دانش‌آموز واقعاً به این مشاور متصل است و link فعال است
