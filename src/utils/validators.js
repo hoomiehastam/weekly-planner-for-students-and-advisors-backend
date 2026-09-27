@@ -104,10 +104,16 @@ const createOtpSchema = z.object({
 // ====== اشتراک و واریز ======
 
 // شماره کارت ۱۶ رقمی — با فاصله یا خط تیره هم قبول است؛ کنترلر نرمال می‌کند
+// نکته: monthlyPrice باید در همین اسکیما باشد؛ وگرنه zod آن را حذف می‌کند و
+// مبلغ ماهانه‌ی کارت هرگز ذخیره نمی‌شود (باگ قبلی: ساکت بدون ذخیره).
 const cardSettingsSchema = z.object({
   cardNumber: z.string().trim().min(16, 'شماره کارت باید ۱۶ رقم باشد').max(19),
   shaba: z.string().trim().max(26, 'شماره شبا نامعتبر است').optional().nullable(),
   holderName: z.string().trim().max(80, 'نام صاحب کارت طولانی است').optional().nullable(),
+  monthlyPrice: z.coerce.number().int('مبلغ ماهانه باید عدد صحیح باشد').min(0)
+    .max(10000000000, 'مبلغ ماهانه خیلی بزرگ است')
+    .nullable()
+    .optional(),
 });
 
 // ثبت رسید واریز توسط پرداخت‌کننده — عکس data URL مثل عکس پروفایل

@@ -943,19 +943,21 @@ async function setCardSettings(req, res, next) {
     // نکته: برای کارت SYSTEM، ownerId قرار است null باشد و Prisma در where
     // ترکیبی ownerKind_ownerId مقدار null را نمی‌پذیرد — پس SYSTEM را با findFirst
     // و INSTITUTE را با upsert معمولی مدیریت می‌کنیم.
+    // ⚠️ هر دو شاخه حتماً await می‌شوند — در غیر این صورت پاسخ قبل از نوشتن در
+    // دیتابیس برمی‌گشت و به کاربر «ذخیره شد» گفته می‌شد در حالی که چیزی ثبت نشده بود.
     const cardData = { cardNumber: normalized, shaba: shaba || null, holderName: holderName || null, monthlyPrice };
-    const card = kind === 'SYSTEM'
-      ? await prisma.cardSettings.findFirst({ where: { ownerKind: 'SYSTEM' } })
-      : null;
     const saved = kind === 'SYSTEM'
-      ? (card
-        ? prisma.cardSettings.update({
-          where: { id: card.id },
-          data: cardData,
-        })
-        : prisma.cardSettings.create({
-          data: { ownerKind: 'SYSTEM', ownerId: null, ...cardData },
-        }))
+      ? await (async () => {
+        const card = await prisma.cardSettings.findFirst({ where: { ownerKind: 'SYSTEM' } });
+        return card
+          ? prisma.cardSettings.update({
+            where: { id: card.id },
+            data: cardData,
+          })
+          : prisma.cardSettings.create({
+            data: { ownerKind: 'SYSTEM', ownerId: null, ...cardData },
+          });
+      })()
       : await prisma.cardSettings.upsert({
         where: { ownerKind_ownerId: { ownerKind: 'INSTITUTE', ownerId } },
         create: { ownerKind: 'INSTITUTE', ownerId, ...cardData },
