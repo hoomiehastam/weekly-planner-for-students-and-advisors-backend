@@ -19,6 +19,17 @@ datasource db {
 // توجه: فیلدهایی که `@unique` یا داخل `@@index` / `@@unique` هستند نمی‌توانند
 // از نوع Text باشند (MySQL روی ستون Text ایندکس نمی‌سازد) و باید VARCHAR بمانند.
 
+// تنظیمات سراسری پلتفرم — کلید/مقدار؛ فقط سوپرادمین می‌تواند بنویسد.
+// الان برای تاریخ کنکور (روزشمار لندینگ) استفاده می‌شود؛ بعداً هم برای سایر
+// تنظیمات سراسری قابل استفاده است.
+model PlatformSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
 // --- نقش‌ها و وضعیت‌های کاربر ---
 enum UserRole {
   STUDENT
@@ -137,9 +148,12 @@ model UserSubscription {
 // کارتِ هر صاحب در getDepositContext به مراجع درست نمایش داده می‌شود.
 // shaba اختیاری است برای نمایش «شماره شبا» کنار شماره کارت.
 model CardSettings {
-  id           String   @id @default(cuid())
-  ownerKind    String // USER | INSTITUTE | SYSTEM
-  ownerId      String? // userId یا instituteId؛ برای SYSTEM null (رابطه‌ی polymorphic — بدون FK)
+  id        String @id @default(cuid())
+  // ownerKind و ownerId داخل ایندکس یکای ترکیبی می‌آیند. ایندکس ترکیبی روی
+  // utf8mb4 سقف ۱۰۰۰ بایت دارد (محدودیت هاست‌های اشتراکی)، پس این دو ستون
+  // عمداً VarChar(100) شده‌اند: ۱۰۰×۴×۲ = ۸۰۰ بایت. مقدارها cuid هستند (۲۵ کاراکتر).
+  ownerKind String @db.VarChar(100) // USER | INSTITUTE | SYSTEM
+  ownerId   String? @db.VarChar(100) // userId یا instituteId؛ برای SYSTEM null (رابطه‌ی polymorphic — بدون FK)
   cardNumber   String
   shaba        String?
   holderName   String? // نام صاحب کارت (پیش‌فرض: نام کاربر/مؤسسه)
@@ -327,8 +341,10 @@ model PasswordReset {
 // اتصال یک به چند بین مشاور و دانش‌آموز؛ دانش‌آموز فقط یک مشاور دارد
 model AdvisorStudentLink {
   id                String   @id @default(cuid())
-  advisorId         String
-  studentId         String
+  // این دو ستون داخل ایندکس یکای ترکیبی می‌آیند؛ VarChar(100) برای جا شدن
+  // در سقف ۱۰۰۰ بایتی ایندکس روی utf8mb4 در هاست اشتراکی (۱۰۰×۴×۲ = ۸۰۰).
+  advisorId         String   @db.VarChar(100)
+  studentId         String   @db.VarChar(100)
   createdAt         DateTime @default(now())
   // هدف ساعت مطالعه‌ی هفتگی که مشاور برای این دانش‌آموز تعیین می‌کند (به دقیقه)
   // null یعنی هنوز هدفی تعیین نشده
@@ -448,8 +464,10 @@ model PlanItem {
 // اتصال many-to-many بین آیتم و تگ
 model PlanItemTag {
   id     String @id @default(cuid())
-  itemId String
-  tagId  String
+  // ایندکس یکای ترکیبی (itemId, tagId) — VarChar(100) برای عبور از سقف
+  // ۱۰۰۰ بایتی ایندکس روی utf8mb4 در هاست اشتراکی.
+  itemId String @db.VarChar(100)
+  tagId  String @db.VarChar(100)
 
   item PlanItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
   tag  Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
@@ -602,8 +620,10 @@ model ExamSubmission {
 // پاسخ دانش‌آموز به یک سؤال
 model ExamAnswer {
   id             String   @id @default(cuid())
-  submissionId   String
-  questionId     String
+  // ایندکس یکای ترکیبی (submissionId, questionId) — VarChar(100) برای عبور
+  // از سقف ۱۰۰۰ بایتی ایندکس روی utf8mb4 در هاست اشتراکی.
+  submissionId   String   @db.VarChar(100)
+  questionId     String   @db.VarChar(100)
   // برای تستی: شماره گزینه‌ی انتخاب‌شده (۱ تا ۴). برای تشریحی null.
   selectedOption Int?
   // برای تشریحی: متن پاسخ دانش‌آموز. برای تستی null.

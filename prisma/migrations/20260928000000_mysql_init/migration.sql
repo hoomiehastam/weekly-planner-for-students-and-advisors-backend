@@ -1,4 +1,16 @@
 -- CreateTable
+CREATE TABLE `PlatformSetting` (
+    `id` VARCHAR(191) NOT NULL,
+    `key` VARCHAR(191) NOT NULL,
+    `value` TEXT NOT NULL,
+    `updatedAt` DATETIME(3) NOT NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    UNIQUE INDEX `PlatformSetting_key_key`(`key`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
 CREATE TABLE `Institute` (
     `id` VARCHAR(191) NOT NULL,
     `name` TEXT NOT NULL,
@@ -52,8 +64,8 @@ CREATE TABLE `UserSubscription` (
 -- CreateTable
 CREATE TABLE `CardSettings` (
     `id` VARCHAR(191) NOT NULL,
-    `ownerKind` VARCHAR(191) NOT NULL,
-    `ownerId` VARCHAR(191) NULL,
+    `ownerKind` VARCHAR(100) NOT NULL,
+    `ownerId` VARCHAR(100) NULL,
     `cardNumber` VARCHAR(191) NOT NULL,
     `shaba` VARCHAR(191) NULL,
     `holderName` VARCHAR(191) NULL,
@@ -134,8 +146,8 @@ CREATE TABLE `PasswordReset` (
 -- CreateTable
 CREATE TABLE `AdvisorStudentLink` (
     `id` VARCHAR(191) NOT NULL,
-    `advisorId` VARCHAR(191) NOT NULL,
-    `studentId` VARCHAR(191) NOT NULL,
+    `advisorId` VARCHAR(100) NOT NULL,
+    `studentId` VARCHAR(100) NOT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `weeklyGoalMinutes` INTEGER NULL,
     `status` ENUM('PENDING', 'ACTIVE', 'REJECTED') NOT NULL DEFAULT 'PENDING',
@@ -218,8 +230,8 @@ CREATE TABLE `PlanItem` (
 -- CreateTable
 CREATE TABLE `PlanItemTag` (
     `id` VARCHAR(191) NOT NULL,
-    `itemId` VARCHAR(191) NOT NULL,
-    `tagId` VARCHAR(191) NOT NULL,
+    `itemId` VARCHAR(100) NOT NULL,
+    `tagId` VARCHAR(100) NOT NULL,
 
     INDEX `PlanItemTag_itemId_idx`(`itemId`),
     INDEX `PlanItemTag_tagId_idx`(`tagId`),
@@ -314,8 +326,8 @@ CREATE TABLE `ExamSubmission` (
 -- CreateTable
 CREATE TABLE `ExamAnswer` (
     `id` VARCHAR(191) NOT NULL,
-    `submissionId` VARCHAR(191) NOT NULL,
-    `questionId` VARCHAR(191) NOT NULL,
+    `submissionId` VARCHAR(100) NOT NULL,
+    `questionId` VARCHAR(100) NOT NULL,
     `selectedOption` INTEGER NULL,
     `textAnswer` TEXT NULL,
     `score` DOUBLE NULL,
