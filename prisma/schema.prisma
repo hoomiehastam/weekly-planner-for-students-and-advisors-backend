@@ -7,7 +7,7 @@ generator client {
 
 datasource db {
   provider = "mysql"
-  url      = proccess.env.DATABASE_URL
+  url      = env("DATABASE_URL")
 }
 
 // ⚠️ نکته‌ی مهم درباره‌ی MySQL:
