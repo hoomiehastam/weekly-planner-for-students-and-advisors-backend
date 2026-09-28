@@ -19,6 +19,27 @@ datasource db {
 // توجه: فیلدهایی که `@unique` یا داخل `@@index` / `@@unique` هستند نمی‌توانند
 // از نوع Text باشند (MySQL روی ستون Text ایندکس نمی‌سازد) و باید VARCHAR بمانند.
 
+// لاگ ممیزی تغییرات مدیریتی — هر اکشن سوپرادمین اینجا ردپا می‌گذارد:
+// چه کسی، چه اکشنی، روی چه هدفی، چه مقداری از چه مقداری تغییر کرد.
+// فقط‌افزایشی (append-only) — هیچ مسیر برنامه‌ای آن را ویرایش/حذف نمی‌کند.
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String // کاربر عامل (سوپرادمین)
+  action    String // مثل USER_DEACTIVATE، OTP_CREATE، KONKUR_DATE_SET
+  // هدف — polymorphic مثل CardSettings: userId / instituteId / depositId و ...
+  targetType String
+  targetId   String
+  // جزئیات تغییر — JSON متنی؛ مقادیر قبل/بعد + برچسب‌های خوانا برای UI
+  details   String?  @db.Text
+  createdAt DateTime @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@index([targetType, targetId])
+}
+
 // تنظیمات سراسری پلتفرم — کلید/مقدار؛ فقط سوپرادمین می‌تواند بنویسد.
 // الان برای تاریخ کنکور (روزشمار لندینگ) استفاده می‌شود؛ بعداً هم برای سایر
 // تنظیمات سراسری قابل استفاده است.
