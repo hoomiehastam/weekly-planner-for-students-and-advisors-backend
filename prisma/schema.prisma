@@ -6,9 +6,18 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
+
+// ⚠️ نکته‌ی مهم درباره‌ی MySQL:
+// در PostgreSQL نوع `String` به `TEXT` نامحدود نگاشت می‌شد، اما در MySQL
+// به `VARCHAR(191)` تبدیل می‌شود. برای همین فیلدهایی که در اپلیکیشن سقف
+// ۱۹۱ کاراکتر ندارند (متن‌های بلند، توضیحات و عکس‌های base64) باید صریحاً
+// با `@db.Text` / `@db.MediumText` / `@db.LongText` مشخص شوند، وگرنه هنگام
+// ذخیره خطای «Data too long for column» می‌گیریم.
+// توجه: فیلدهایی که `@unique` یا داخل `@@index` / `@@unique` هستند نمی‌توانند
+// از نوع Text باشند (MySQL روی ستون Text ایندکس نمی‌سازد) و باید VARCHAR بمانند.
 
 // --- نقش‌ها و وضعیت‌های کاربر ---
 enum UserRole {
@@ -46,19 +55,19 @@ enum AdvisorLinkStatus {
 // invariant مهم: null یعنی مستقل؛ لینک مشاور–دانش‌آموز هرگز از مرز مؤسسه عبور نمی‌کند
 // (هر دو طرف عضو یک مؤسسه، یا هر دو null — در کنترلرهای ساخت لینک اعمال می‌شود).
 model Institute {
-  id        String     @id @default(cuid())
-  name      String
+  id           String     @id @default(cuid())
+  name         String     @db.Text
   // مبلغ ماهانه‌ی اشتراک مؤسسه (تومان) — توسط سوپرادمین تعیین می‌شود؛
   // در صفحه‌ی واریز مدیر مؤسسه نمایش داده می‌شود و مبنای محاسبه‌ی خودکار روزهای تمدید است.
   // null یعنی قیمت خاصی تعیین نشده (تأییدکننده روزها را دستی تعیین می‌کند).
   monthlyPrice Int?
   // کد دعوت یکتا — ثبت‌نام با این کد عضویت در مؤسسه می‌دهد و درخواست تأیید
   // به مدیر مؤسسه می‌رود (به‌جای سوپرادمین)
-  code      String     @unique
+  code         String     @unique
   // مؤسسه هم مثل مشاور توسط سوپرادمین تأیید می‌شود
-  status    UserStatus @default(PENDING)
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  status       UserStatus @default(PENDING)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
   members      User[]
   subscription InstituteSubscription?
@@ -90,7 +99,7 @@ model InstituteSubscription {
   maxAdvisors    Int?
   maxStudents    Int?
   // ردپای پرداخت/تمدید دستی (درگاه بانکی + ویرایش سوپرادمین)
-  lastPaymentRef String?
+  lastPaymentRef String?  @db.Text
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -111,7 +120,7 @@ model UserSubscription {
   status         String   @default("TRIAL") // TRIAL | ACTIVE | GRACE | EXPIRED
   startsAt       DateTime @default(now())
   endsAt         DateTime
-  lastPaymentRef String?
+  lastPaymentRef String?  @db.Text
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -128,17 +137,17 @@ model UserSubscription {
 // کارتِ هر صاحب در getDepositContext به مراجع درست نمایش داده می‌شود.
 // shaba اختیاری است برای نمایش «شماره شبا» کنار شماره کارت.
 model CardSettings {
-  id         String   @id @default(cuid())
-  ownerKind  String // USER | INSTITUTE | SYSTEM
-  ownerId    String? // userId یا instituteId؛ برای SYSTEM null (رابطه‌ی polymorphic — بدون FK)
-  cardNumber String
-  shaba      String?
-  holderName String? // نام صاحب کارت (پیش‌فرض: نام کاربر/مؤسسه)
+  id           String   @id @default(cuid())
+  ownerKind    String // USER | INSTITUTE | SYSTEM
+  ownerId      String? // userId یا instituteId؛ برای SYSTEM null (رابطه‌ی polymorphic — بدون FK)
+  cardNumber   String
+  shaba        String?
+  holderName   String? // نام صاحب کارت (پیش‌فرض: نام کاربر/مؤسسه)
   // مبلغ ماهانه (تومان) که برای این کارت/صاحبش تعیین شده — در صفحه‌ی واریز و
   // مودال تأیید رسید نمایش داده می‌شود و مبنای محاسبه‌ی خودکار روزهای تمدید است.
   monthlyPrice Int?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@unique([ownerKind, ownerId])
   @@index([ownerId])
@@ -173,10 +182,11 @@ model DepositRequest {
   targetKind      DepositTargetKind
   targetId        String // userId یا instituteId
   // عکس رسید به‌صورت data URL (همان الگوی عکس پروفایل/سؤال آزمون) حداکثر ~۵۰۰KB
-  receiptImageUrl String
+  // در MySQL باید LongText باشد چون String پیش‌فرض به VARCHAR(191) نگاشت می‌شود
+  receiptImageUrl String            @db.LongText
   amount          BigInt? // مبلغ واریزی اختیاری (ریال) — برای شفافیت
-  // توضیح کوتاه پرداخت‌کننده (مثل «تمدید ماهانه آبان»)
-  note            String?
+  // توضیح کوتاه پرداخت‌کننده (مثل «تمدید ماهانه آبان») — سقف اپلیکیشن ۳۰۰ کاراکتر است
+  note            String?           @db.Text
   status          DepositStatus     @default(PENDING)
   // مدت تمدید (روز) که فقط موقع تأیید، توسط تأییدکننده تعیین می‌شود (۱ تا ۳۶۵)
   approvedDays    Int?
@@ -184,7 +194,7 @@ model DepositRequest {
   decidedAt       DateTime?
   newEndsAt       DateTime?
   // توضیح دلخواه تأییدکننده موقع رد (الزامی نیست)
-  decisionNote    String?
+  decisionNote    String?           @db.Text
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
@@ -215,11 +225,12 @@ model User {
   phone             String?
   // عکس پروفایل — به‌صورت data URL (base64) ذخیره می‌شود؛ اختیاری و حداکثر ~۵۰۰KB
   // عمداً جدا از فایل‌سیستم تا استقرار (Render) ساده بماند
-  photoUrl          String?
+  // در MySQL باید LongText باشد (سقف اپلیکیشن ۷۰۰*۱۰۲۴ کاراکتر است)
+  photoUrl          String?    @db.LongText
   // توضیحات کوتاهی که کاربر (به‌ویژه مشاور) درباره‌ی خودش می‌دهد
   // برای مشاور، سوپرادمین قبل از تأیید/رد این توضیحات را می‌بیند
   // برای دانش‌آموز، می‌تواند اطلاعاتی مثل رشته، پایه، یا هدف کنکور را بنویسد
-  bio               String?
+  bio               String?    @db.Text
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
 
@@ -371,9 +382,9 @@ model Tag {
 // برنامه‌ی مطالعاتی که مشاور برای یک دانش‌آموز می‌سازد
 model StudyPlan {
   id        String    @id @default(cuid())
-  title     String
+  title     String    @db.Text
   // توضیح کلی برنامه؛ اختیاری است
-  note      String?
+  note      String?   @db.Text
   studentId String
   advisorId String
   // بازه‌ی زمانی برنامه
@@ -407,8 +418,8 @@ model PlanDay {
 model PlanItem {
   id          String     @id @default(cuid())
   dayId       String
-  subject     String
-  description String?
+  subject     String     @db.Text
+  description String?    @db.Text
   // ساعت شروع و پایان این بازه‌ی درسی، با فرمت "HH:MM" (مثل "08:30")
   // به‌صورت رشته ذخیره می‌شود تا نمایش فارسی و محاسبه‌ی ساده‌تر باشد
   startTime   String?
@@ -463,7 +474,7 @@ model PlanItemLog {
   // تعداد تست‌های زده‌شده (در UI فقط برای تگ «تمرین» وارد می‌شود)
   testsTaken Int?
   // توضیح اختیاری، مخصوصاً برای «سایر کارها»
-  note       String?
+  note       String?  @db.Text
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -471,7 +482,7 @@ model PlanItemLog {
   tag      Tag?     @relation(fields: [tagId], references: [id], onDelete: SetNull)
 
   // نکته: یکتایی (planItemId, tagId) در سطح اپلیکیشن هندل می‌شود، نه در سطح دیتابیس،
-  // چون tagId می‌تواند null باشد و در PostgreSQL NULL در unique constraint متمایز محسوب می‌شود.
+  // چون tagId می‌تواند null باشد و در MySQL هم NULL در unique constraint متمایز محسوب می‌شود.
   @@index([planItemId])
   @@index([tagId])
 }
@@ -481,7 +492,7 @@ model Reminder {
   id        String    @id @default(cuid())
   advisorId String
   studentId String
-  message   String
+  message   String    @db.Text
   // زمان خوانده‌شدن یادآور توسط دانش‌آموز؛ null یعنی هنوز نخوانده
   readAt    DateTime?
   createdAt DateTime  @default(now())
@@ -511,8 +522,8 @@ enum SubmissionStatus {
 // آزمونی که مشاور برای یک دانش‌آموز (یا همه‌ی دانش‌آموزهایش) می‌سازد
 model Exam {
   id               String    @id @default(cuid())
-  title            String
-  description      String?
+  title            String    @db.Text
+  description      String?   @db.Text
   studentId        String // دانش‌آموزی که آزمون برای اوست
   advisorId        String // مشاوری که آزمون را ساخته
   // روز و زمان شروع آزمون — دانش‌آموز نمی‌تواند قبل از این زمان آزمون را شروع کند
@@ -544,16 +555,17 @@ model ExamQuestion {
   examId        String
   type          QuestionType
   // متن سؤال — اگر عکس آپلود شود، اختیاری است
-  text          String?
+  text          String?      @db.Text
   // برای سؤالات تستی: گزینه‌ها با | جدا می‌شوند. مثلاً "گزینه ۱|گزینه ۲|گزینه ۳|گزینه ۴"
-  options       String?
+  options       String?      @db.Text
   // برای سؤالات تستی: شماره گزینه‌ی صحیح (۱ تا ۴). برای تشریحی null.
   correctOption Int?
   // نمره‌ی این سؤال (مثلاً ۱ یا ۲)
   points        Int          @default(1)
   // آدرس عکس سؤال (اختیاری) — می‌تواند صورت سؤال یا ضمیمه باشد
   // عکس در کلاینت به base64 تبدیل و مستقیم در دیتابیس ذخیره می‌شود
-  imageUrl      String?
+  // در MySQL باید LongText باشد چون عکس base64 از ۱۹۱ کاراکتر بزرگ‌تر است
+  imageUrl      String?      @db.LongText
   order         Int          @default(0)
 
   exam    Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
@@ -574,7 +586,7 @@ model ExamSubmission {
   // حداکثر نمره‌ی ممکن
   maxScore    Float?
   // توضیح مشاور در مورد ارسال
-  feedback    String?
+  feedback    String?          @db.Text
   startedAt   DateTime         @default(now())
   submittedAt DateTime?
   gradedAt    DateTime?
@@ -595,7 +607,8 @@ model ExamAnswer {
   // برای تستی: شماره گزینه‌ی انتخاب‌شده (۱ تا ۴). برای تشریحی null.
   selectedOption Int?
   // برای تشریحی: متن پاسخ دانش‌آموز. برای تستی null.
-  textAnswer     String?
+  // سقف اپلیکیشن ۱۰۰۰۰ کاراکتر است، پس Text (۶۴ کیلوبایت) کافی است
+  textAnswer     String?  @db.Text
   // نمره‌ی این پاسخ (برای تشریحی، مشاور می‌دهد؛ برای تستی، خودکار محاسبه می‌شود)
   score          Float?
   createdAt      DateTime @default(now())

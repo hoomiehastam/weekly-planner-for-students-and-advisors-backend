@@ -520,7 +520,7 @@ async function setItemTagLog(req, res, next) {
 
     // upsert: اگر لاگی برای این (itemId, tagId) هست، به‌روزرسانی کن؛ وگرنه بساز
     // نکته: از findFirst استفاده می‌کنیم چون tagId می‌تواند null باشد و
-    // در PostgreSQL NULL در unique constraint متمایز محسوب می‌شود.
+    // در MySQL هم NULL در unique constraint متمایز محسوب می‌شود.
     const existing = await prisma.planItemLog.findFirst({
       where: { planItemId: id, tagId: tagId || null },
     });

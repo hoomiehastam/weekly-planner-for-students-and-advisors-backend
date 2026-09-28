@@ -35,7 +35,10 @@ services:
         sync: false  # مقدار را به‌صورت دستی در Dashboard وارد کن
 
 databases:
-  # دیتابیس PostgreSQL واقعی روی Render
+  # دیتابیس MySQL واقعی روی Render
+  # نکته: MySQL روی Render برخلاف PostgreSQL برای اتصال بیرونی به لیست IP نیاز دارد.
+  # اگر سرویس فقط از داخل Render وصل می‌شود همین کافی است؛ برای تست از سیستم خودت
+  # باید آی‌پی‌ات را به‌صورت `ipAllowList: ["0.0.0.0/0"]` (نامحدود) یا CIDR خودت اضافه کنی.
   - name: example_71x6
     plan: free
     databaseName: example_71x6
