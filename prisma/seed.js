@@ -13,7 +13,7 @@ async function seedTags() {
       await prisma.tag.create({ data: { name, isDefault: true } });
     }
   }
-  console.log('✅ تگ‌های پیش‌فرض ساخته شدند:', DEFAULT_TAGS.join('، '));
+    console.log('✅ Default tags created:', DEFAULT_TAGS.join(', '));
 }
 
 // این تابع فقط وقتی کاری انجام می‌دهد که مشخصه‌های محیطی سوپرادمین تنظیم شده باشند
@@ -23,13 +23,13 @@ async function seedSuperadmin() {
   const password = process.env.SUPERADMIN_PASSWORD;
 
   if (!email || !password) {
-    console.log('ℹ️ مشخصه‌های سوپرادمین تنظیم نشده، این مرحله رد شد');
+    console.log('ℹ️ Superadmin env vars not set — skipped');
     return;
   }
 
   const existing = await prisma.user.findFirst({ where: { role: 'SUPERADMIN' } });
   if (existing) {
-    console.log('ℹ️ یک سوپرادمین از قبل وجود دارد، حساب جدیدی ساخته نشد');
+    console.log('ℹ️ A superadmin already exists — no new account created');
     return;
   }
 
@@ -43,7 +43,7 @@ async function seedSuperadmin() {
       status: 'ACTIVE',
     },
   });
-  console.log('✅ حساب سوپرادمین ساخته شد');
+  console.log('✅ Superadmin account created');
 }
 
 async function main() {
