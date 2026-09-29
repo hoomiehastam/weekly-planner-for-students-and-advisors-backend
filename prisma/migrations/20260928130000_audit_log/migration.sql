@@ -3,8 +3,8 @@ CREATE TABLE `AuditLog` (
     `id` VARCHAR(191) NOT NULL,
     `actorId` VARCHAR(191) NULL,
     `action` VARCHAR(191) NOT NULL,
-    `targetType` VARCHAR(191) NOT NULL,
-    `targetId` VARCHAR(191) NOT NULL,
+    `targetType` VARCHAR(100) NOT NULL,
+    `targetId` VARCHAR(100) NOT NULL,
     `details` TEXT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 
@@ -23,8 +23,8 @@ ALTER TABLE `User` MODIFY `role` ENUM('STUDENT', 'ADVISOR', 'SUPERADMIN', 'INSTI
 -- CreateTable
 CREATE TABLE `ParentLink` (
     `id` VARCHAR(191) NOT NULL,
-    `parentId` VARCHAR(191) NOT NULL,
-    `studentId` VARCHAR(191) NOT NULL,
+    `parentId` VARCHAR(100) NOT NULL,
+    `studentId` VARCHAR(100) NOT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 
     UNIQUE INDEX `ParentLink_parentId_studentId_key`(`parentId`, `studentId`),

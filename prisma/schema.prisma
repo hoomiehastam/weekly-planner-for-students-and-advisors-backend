@@ -27,8 +27,10 @@ model AuditLog {
   actorId   String? // کاربر عامل (سوپرادمین) — nullable تا با حذف حساب، لاگ بماند
   action    String // مثل USER_DEACTIVATE، OTP_CREATE، KONKUR_DATE_SET
   // هدف — polymorphic مثل CardSettings: userId / instituteId / depositId و ...
-  targetType String
-  targetId   String
+  // ایندکس ترکیبی (targetType, targetId) — VarChar(100) برای عبور از سقف
+  // ۱۰۰۰ بایتی ایندکس روی utf8mb4 در هاست اشتراکی.
+  targetType String @db.VarChar(100)
+  targetId   String @db.VarChar(100)
   // جزئیات تغییر — JSON متنی؛ مقادیر قبل/بعد + برچسب‌های خوانا برای UI
   details   String?  @db.Text
   createdAt DateTime @default(now())
@@ -370,8 +372,10 @@ model PasswordReset {
 // فقط-خواندنی: والد به آمار تجمیعی فرزند دسترسی دارد، نه یادداشت‌ها و یادآورها.
 model ParentLink {
   id        String   @id @default(cuid())
-  parentId  String
-  studentId String
+  // ایندکس یکای ترکیبی (parentId, studentId) — VarChar(100) برای عبور از
+  // سقف ۱۰۰۰ بایتی ایندکس روی utf8mb4 در هاست اشتراکی.
+  parentId  String   @db.VarChar(100)
+  studentId String   @db.VarChar(100)
   createdAt DateTime @default(now())
 
   parent  User  @relation("ParentSide", fields: [parentId], references: [id], onDelete: Cascade)
