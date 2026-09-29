@@ -34,7 +34,7 @@ const registerSchema = z.object({
   fullName: z.string().trim().min(2, 'نام باید حداقل ۲ کاراکتر باشد').max(80, 'نام نباید بیشتر از ۸۰ کاراکتر باشد'),
   email: emailSchema,
   password: passwordSchema,
-  role: z.enum(['STUDENT', 'ADVISOR'], { errorMap: () => ({ message: 'نقش باید STUDENT یا ADVISOR باشد' }) }),
+  role: z.enum(['STUDENT', 'ADVISOR', 'PARENT'], { errorMap: () => ({ message: 'نقش باید STUDENT، ADVISOR یا PARENT باشد' }) }),
   // شماره تماس در ثبت‌نام الزامی است (در پروفایل هم قابل ویرایش)
   phone: phoneSchema,
   bio: optionalText(500),
@@ -51,6 +51,9 @@ const registerSchema = z.object({
   // برای ثبت‌نام مؤسسه‌ای: شناسه‌ی مؤسسه
   instituteId: z.string().cuid('شناسه‌ی مؤسسه نامعتبر است').optional().nullable(),
   instituteCode: z.string().trim().min(1).max(20).optional(),
+  // ثبت‌نام والد: کد دعوت فرزند (اختیاری — بعداً هم قابل اتصال است)
+  parentInviteCode: z.string().trim().min(8).max(8)
+    .regex(/^[A-Z0-9]+$/, 'کد دعوت نامعتبر است').optional(),
 });
 
 const loginSchema = z.object({
@@ -189,6 +192,12 @@ const otpRequestSchema = z.object({
   email: emailSchema,
 });
 
+// اتصال والد با کد دعوت دانش‌آموز — کد ۸ کاراکتری بدون ابهام (I/O/0/1 ندارد)
+const parentJoinSchema = z.object({
+  code: z.string().trim().min(8, 'کد دعوت باید ۸ کاراکتر باشد').max(8, 'کد دعوت باید ۸ کاراکتر باشد')
+    .regex(/^[A-Z0-9]+$/, 'کد دعوت نامعتبر است'),
+});
+
 // ورود با کد یک‌بارمصرف ایمیلی — کد جای رمز عبور می‌نشیند
 const otpLoginSchema = z.object({
   email: emailSchema,
@@ -222,6 +231,7 @@ module.exports = {
     resetPassword: resetPasswordSchema,
     otpRequest: otpRequestSchema,
     otpLogin: otpLoginSchema,
+    parentJoin: parentJoinSchema,
     updateInstituteSubscription: updateInstituteSubscriptionSchema,
     updateUserSubscription: updateUserSubscriptionSchema,
     updateInstituteLimits: updateInstituteLimitsSchema,

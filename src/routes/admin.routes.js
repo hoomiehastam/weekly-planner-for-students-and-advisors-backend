@@ -27,6 +27,7 @@ const {
   updateUserMonthlyPrice,
   updateInstituteMonthlyPrice,
   setCardSettings,
+  listAuditLogs,
 } = require('../controllers/admin.controller');
 const { validate, schemas } = require('../utils/validators');
 
@@ -93,5 +94,8 @@ router.put('/users/:id/monthly-price', validate(schemas.monthlyPrice), updateUse
 
 // تنظیم مبلغ ماهانه‌ی اشتراک مؤسسه — body: { monthlyPrice: number|null }
 router.put('/institutes/:id/monthly-price', validate(schemas.monthlyPrice), updateInstituteMonthlyPrice);
+
+// ردپای تغییرات مدیریتی (لاگ ممیزی)
+router.get('/audit-logs', listAuditLogs);
 
 module.exports = router;

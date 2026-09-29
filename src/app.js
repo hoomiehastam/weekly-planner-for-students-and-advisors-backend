@@ -85,6 +85,7 @@ app.use('/api/exams', require('./routes/exam.routes'));
 app.use('/api/institute', require('./routes/institute.routes'));
 app.use('/api/subscription', require('./routes/subscription.routes'));
 app.use('/api/settings', require('./routes/setting.routes'));
+app.use('/api/parents', require('./routes/parent.routes'));
 
 // هندلر ۴۰۴ برای مسیرهای تعریف‌نشده
 app.use((req, res) => {

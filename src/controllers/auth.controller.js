@@ -32,22 +32,25 @@ const otpLastRequestAt = new Map();
 //   ۳) link با مشاور PENDING ساخته می‌شود
 async function register(req, res, next) {
   try {
-    const { fullName, email, password, role, advisorId, phone, bio, field, fields, instituteId, instituteCode } = req.body;
+    const { fullName, email, password, role, advisorId, phone, bio, field, fields, instituteId, instituteCode, parentInviteCode } = req.body;
 
     if (!fullName || !email || !password || !role) {
       return res.status(400).json({ error: 'همه‌ی فیلدها الزامی هستند' });
     }
 
-    if (!['STUDENT', 'ADVISOR'].includes(role)) {
+    if (!['STUDENT', 'ADVISOR', 'PARENT'].includes(role)) {
       return res.status(400).json({ error: 'نقش انتخاب‌شده معتبر نیست' });
     }
 
     // اعتبارسنجی رشته‌ی تحصیلی
     //   دانش‌آموز: field تکی الزامی
     //   مشاور: fields آرایه‌ای الزامی (حداقل یک رشته)
+    //   والد: بدون رشته — فقط کد دعوت فرزند را می‌دهد (اختیاری هنگام ثبت‌نام؛ بعداً هم می‌تواند وارد کند)
     let studentField = null;
     let advisorFields = null;
-    if (role === 'STUDENT') {
+    if (role === 'PARENT') {
+      // والد مشاور و مؤسسه ندارد — فقط فیلدهای پایه را پر می‌کند
+    } else if (role === 'STUDENT') {
       if (!field || !['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'].includes(field)) {
         return res.status(400).json({ error: 'انتخاب رشته‌ی تحصیلی الزامی است' });
       }
@@ -158,7 +161,8 @@ async function register(req, res, next) {
 
     const passwordHash = await bcrypt.hash(passwordValue, SALT_ROUNDS);
 
-    const status = role === 'STUDENT' && !institute ? 'ACTIVE' : 'PENDING';
+    // والد فوراً فعال می‌شود — چیزی برای تأیید ندارد؛ دسترسی‌اش با اتصال به فرزند معنا پیدا می‌کند
+    const status = role === 'PARENT' || (role === 'STUDENT' && !institute) ? 'ACTIVE' : 'PENDING';
 
     // ساخت کاربر + رشته‌های تخصص مشاور (اگر مشاور است) + اشتراک آزمایشی در یک تراکنش
     // (به ثبت‌نام‌های جدید ۱۴ روز TRIAL داده می‌شود تا چرخه‌ی واریز از روز اول معنا داشته باشد)
@@ -191,13 +195,51 @@ async function register(req, res, next) {
       });
     }
 
+    // اگر والد با کد دعوت ثبت‌نام کرده، همین‌جا به فرزند وصلش می‌کنیم
+    let childName = null;
+    if (role === 'PARENT' && parentInviteCode) {
+      const invite = await prisma.parentInvite.findUnique({
+        where: { code: String(parentInviteCode).trim().toUpperCase() },
+      });
+      if (invite && !invite.usedAt && invite.expiresAt > new Date()) {
+        await prisma.$transaction([
+          prisma.parentLink.create({
+            data: { parentId: user.id, studentId: invite.studentId },
+          }),
+          prisma.parentInvite.update({
+            where: { id: invite.id },
+            data: { usedAt: new Date() },
+          }),
+        ]);
+        childName = (await prisma.user.findUnique({
+          where: { id: invite.studentId },
+          select: { fullName: true },
+        }))?.fullName || null;
+      } else {
+        // کد بد/منقضی مانع ثبت‌نام نیست — کاربر بعداً از داخل پنل می‌تواند اتصال بدهد
+        await prisma.auditLog.create({
+          data: {
+            actorId: null,
+            action: 'PARENT_INVITE_INVALID_AT_REGISTER',
+            targetType: 'USER',
+            targetId: user.id,
+            details: JSON.stringify({ code: parentInviteCode }),
+          },
+        }).catch(() => {});
+      }
+    }
+
     if (status === 'ACTIVE') {
       const token = generateToken(user);
       setTokenCookie(res, token);
       return res.status(201).json({
-        message: role === 'STUDENT'
-          ? 'ثبت‌نام با موفقیت انجام شد. درخواست اتصال به مشاور ارسال شد — بعد از تأیید مشاور، به برنامه‌ی هفتگی دسترسی خواهی داشت.'
-          : 'ثبت‌نام با موفقیت انجام شد',
+        message: role === 'PARENT'
+          ? childName
+            ? `ثبت‌نام انجام شد و به «${childName}» وصل شدی`
+            : 'ثبت‌نام انجام شد. با کد دعوت فرزندت از پنل خودت وصل شو'
+          : role === 'STUDENT'
+            ? 'ثبت‌نام با موفقیت انجام شد. درخواست اتصال به مشاور ارسال شد — بعد از تأیید مشاور، به برنامه‌ی هفتگی دسترسی خواهی داشت.'
+            : 'ثبت‌نام با موفقیت انجام شد',
         user: { id: user.id, fullName: user.fullName, role: user.role, field: user.field },
       });
     }

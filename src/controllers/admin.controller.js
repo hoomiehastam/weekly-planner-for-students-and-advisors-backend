@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { sendOtpEmail } = require('../utils/mailer');
 const { remainingInstituteCapacity, CAPACITY_ERROR } = require('../utils/subscription');
+const { writeAuditLog } = require('../utils/audit');
 
 const OTP_LENGTH = 8;
 const OTP_TTL_HOURS_DEFAULT = 24;
@@ -141,6 +142,14 @@ async function approveAdvisor(req, res, next) {
     const updated = await prisma.user.update({
       where: { id },
       data: { status: 'ACTIVE' },
+    });
+
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'ADVISOR_APPROVE',
+      targetType: 'USER',
+      targetId: id,
+      details: { label: updated.fullName },
     });
 
     res.json({ message: 'مشاور تایید شد', advisor: { id: updated.id, fullName: updated.fullName } });
@@ -304,6 +313,13 @@ async function deactivateAdvisor(req, res, next) {
       where: { id },
       data: { status: 'SUSPENDED' },
     });
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'ADVISOR_DEACTIVATE',
+      targetType: 'USER',
+      targetId: id,
+      details: { label: advisor.fullName },
+    });
     res.json({ message: `مشاور «${advisor.fullName}» غیرفعال شد`, advisor: { id, status: 'SUSPENDED' } });
   } catch (err) {
     next(err);
@@ -355,6 +371,13 @@ async function deleteAdvisor(req, res, next) {
     });
     // حذف کاربر — همه‌ی روابط cascade می‌شوند
     await prisma.user.delete({ where: { id } });
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'ADVISOR_DELETE',
+      targetType: 'USER',
+      targetId: id,
+      details: { label: advisor.fullName, studentCount },
+    });
     res.json({
       message: `مشاور «${advisor.fullName}» حذف شد. ${studentCount} اتصال دانش‌آموز نیز پاک شد.`,
       advisor: { id, fullName: advisor.fullName },
@@ -433,6 +456,14 @@ async function updateInstituteSubscription(req, res, next) {
       update: data,
     });
 
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'INSTITUTE_SUBSCRIPTION_SET',
+      targetType: 'INSTITUTE',
+      targetId: id,
+      details: { label: institute.name, endsAt: subscription.endsAt, status: subscription.status },
+    });
+
     res.json({
       message: 'اشتراک مؤسسه به‌روزرسانی شد',
       subscription: {
@@ -507,6 +538,14 @@ async function assignAdvisorToInstitute(req, res, next) {
       },
     });
 
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'ADVISOR_INSTITUTE_ASSIGN',
+      targetType: 'USER',
+      targetId: id,
+      details: { label: updated.fullName, instituteId, instituteName: updated.institute?.name || null },
+    });
+
     res.json({
       message: updated.institute
         ? `مشاور به مؤسسه‌ی «${updated.institute.name}» تخصیص داده شد`
@@ -555,6 +594,13 @@ async function setInstituteLeader(req, res, next) {
     }
 
     await prisma.institute.update({ where: { id }, data: { leaderId } });
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'INSTITUTE_LEADER_SET',
+      targetType: 'INSTITUTE',
+      targetId: id,
+      details: { label: institute.name, leaderId, leaderName: member.fullName },
+    });
     res.json({
       message: `«${member.fullName}» به‌عنوان نماینده‌ی مؤسسه‌ی «${institute.name}» تعیین شد`,
       leader: { id: member.id, fullName: member.fullName },
@@ -610,6 +656,16 @@ async function createUserOtp(req, res, next) {
         mustChangePassword: true,
         passwordHash: invalidatedPasswordHash,
       },
+    });
+
+    // ارسال خودکار کد به ایمیل کاربر — حتی اگر شکست بخورد، OTP ساخته شده معتبر می‌ماند
+    // و در پاسخ به سوپرادمین برگردانده می‌شود تا دستی ارسالش کند.
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'OTP_CREATE',
+      targetType: 'USER',
+      targetId: id,
+      details: { label: user.fullName, ttlHours: ttl, emailed: null },
     });
 
     // ارسال خودکار کد به ایمیل کاربر — حتی اگر شکست بخورد، OTP ساخته شده معتبر می‌ماند
@@ -717,6 +773,13 @@ async function deactivateStudent(req, res, next) {
       return res.status(400).json({ error: 'این حساب از قبل غیرفعال است' });
     }
     await prisma.user.update({ where: { id }, data: { status: 'SUSPENDED' } });
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'STUDENT_DEACTIVATE',
+      targetType: 'USER',
+      targetId: id,
+      details: { label: student.fullName },
+    });
     res.json({ message: `دانش‌آموز «${student.fullName}» غیرفعال شد`, student: { id, status: 'SUSPENDED' } });
   } catch (err) {
     next(err);
@@ -753,6 +816,13 @@ async function deleteStudent(req, res, next) {
       return res.status(400).json({ error: 'نمی‌توانید حساب خودتان را حذف کنید' });
     }
     await prisma.user.delete({ where: { id } });
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'STUDENT_DELETE',
+      targetType: 'USER',
+      targetId: id,
+      details: { label: student.fullName },
+    });
     res.json({
       message: `دانش‌آموز «${student.fullName}» حذف شد. همه‌ی برنامه‌ها و آزمون‌های او نیز پاک شد.`,
       student: { id, fullName: student.fullName },
@@ -802,6 +872,14 @@ async function updateUserSubscription(req, res, next) {
       update: data,
     });
 
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'USER_SUBSCRIPTION_SET',
+      targetType: 'USER',
+      targetId: id,
+      details: { label: user.fullName, endsAt: subscription.endsAt, status: subscription.status },
+    });
+
     res.json({
       message: 'اشتراک کاربر به‌روزرسانی شد',
       subscription: {
@@ -840,6 +918,14 @@ async function updateInstituteLimits(req, res, next) {
       update: { maxAdvisors, maxStudents },
     });
 
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'INSTITUTE_LIMITS_SET',
+      targetType: 'INSTITUTE',
+      targetId: id,
+      details: { label: institute.name, maxAdvisors, maxStudents },
+    });
+
     res.json({
       message: 'محدودیت اعضای مؤسسه به‌روزرسانی شد',
       limits: { maxAdvisors: subscription.maxAdvisors, maxStudents: subscription.maxStudents },
@@ -872,6 +958,13 @@ async function updateUserMonthlyPrice(req, res, next) {
     }
 
     const updated = await prisma.user.update({ where: { id }, data: { monthlyPrice: price } });
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'USER_MONTHLY_PRICE_SET',
+      targetType: 'USER',
+      targetId: id,
+      details: { label: user.fullName, before: user.monthlyPrice, after: price },
+    });
     res.json({
       message: price != null ? `مبلغ ماهانه‌ی «${updated.fullName}» به ${price.toLocaleString('fa-IR')} تومان تنظیم شد` : `مبلغ ماهانه‌ی «${updated.fullName}» حذف شد`,
       monthlyPrice: updated.monthlyPrice,
@@ -899,6 +992,13 @@ async function updateInstituteMonthlyPrice(req, res, next) {
     }
 
     await prisma.institute.update({ where: { id }, data: { monthlyPrice: price } });
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'INSTITUTE_MONTHLY_PRICE_SET',
+      targetType: 'INSTITUTE',
+      targetId: id,
+      details: { label: institute.name, before: institute.monthlyPrice, after: price },
+    });
     res.json({
       message: price != null ? `مبلغ ماهانه‌ی مؤسسه‌ی «${institute.name}» به ${price.toLocaleString('fa-IR')} تومان تنظیم شد` : `مبلغ ماهانه‌ی مؤسسه‌ی «${institute.name}» حذف شد`,
       monthlyPrice: price,
@@ -970,6 +1070,34 @@ async function setCardSettings(req, res, next) {
   }
 }
 
+// ====== فهرست لاگ ممیزی ======
+// آخرین اکشن‌های مدیریتی — برای بخش «ردپای تغییرات» پنل مدیریت.
+async function listAuditLogs(req, res, next) {
+  try {
+    const take = Math.min(Number(req.query.take) || 50, 200);
+    const logs = await prisma.auditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take,
+      include: {
+        actor: { select: { fullName: true, email: true } },
+      },
+    });
+    res.json({
+      logs: logs.map((l) => ({
+        id: l.id,
+        action: l.action,
+        targetType: l.targetType,
+        targetId: l.targetId,
+        details: l.details ? JSON.parse(l.details) : null,
+        createdAt: l.createdAt,
+        actorName: l.actor?.fullName || '(حساب حذف‌شده)',
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   listPendingAdvisors,
   approveAdvisor,
@@ -996,4 +1124,5 @@ module.exports = {
   updateUserMonthlyPrice,
   updateInstituteMonthlyPrice,
   setCardSettings,
+  listAuditLogs,
 };

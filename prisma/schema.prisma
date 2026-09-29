@@ -24,7 +24,7 @@ datasource db {
 // فقط‌افزایشی (append-only) — هیچ مسیر برنامه‌ای آن را ویرایش/حذف نمی‌کند.
 model AuditLog {
   id        String   @id @default(cuid())
-  actorId   String // کاربر عامل (سوپرادمین)
+  actorId   String? // کاربر عامل (سوپرادمین) — nullable تا با حذف حساب، لاگ بماند
   action    String // مثل USER_DEACTIVATE، OTP_CREATE، KONKUR_DATE_SET
   // هدف — polymorphic مثل CardSettings: userId / instituteId / depositId و ...
   targetType String
@@ -34,7 +34,6 @@ model AuditLog {
   createdAt DateTime @default(now())
 
   actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
-
   @@index([createdAt])
   @@index([actorId])
   @@index([targetType, targetId])
@@ -57,6 +56,7 @@ enum UserRole {
   ADVISOR
   SUPERADMIN
   INSTITUTE_MANAGER // مدیر مؤسسه — فقط داده‌های مؤسسه‌ی خودش را می‌بیند (خواندنی + تأیید اعضا)
+  PARENT // والد — فقط-خواندنی؛ با کد دعوتِ دانش‌آموز به فرزندش وصل می‌شود
 }
 
 enum UserStatus {
@@ -317,6 +317,13 @@ model User {
 
   // توکن‌های بازنشانی رمز عبور (فراموشی رمز)
   passwordResets PasswordReset[]
+  // لاگ‌های ممیزی که این کاربر عاملشان بوده (بعد از حذف حساب، لاگ‌ها با actorId=null می‌مانند)
+  auditLogs AuditLog[] @relation("AuditActor")
+
+  // روابط والد ↔ فرزند
+  parentLinks   ParentLink[]  @relation("ParentSide")
+  childLinks    ParentLink[]  @relation("StudentChild")
+  parentInvites ParentInvite[]
 
   // رشته‌های تخصص مشاور (چندتا می‌تواند باشد) — فقط برای ADVISOR
   advisorFields AdvisorField[]
@@ -357,6 +364,36 @@ model PasswordReset {
   userId String?
 
   @@index([email])
+}
+
+// اتصال والد ↔ دانش‌آموز — دانش‌آموز کد دعوت می‌سازد و والد با آن ثبت‌نام/اتصال می‌شود.
+// فقط-خواندنی: والد به آمار تجمیعی فرزند دسترسی دارد، نه یادداشت‌ها و یادآورها.
+model ParentLink {
+  id        String   @id @default(cuid())
+  parentId  String
+  studentId String
+  createdAt DateTime @default(now())
+
+  parent  User  @relation("ParentSide", fields: [parentId], references: [id], onDelete: Cascade)
+  student User  @relation("StudentChild", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([parentId, studentId])
+  @@index([studentId])
+}
+
+// کد دعوت والد — دانش‌آموز می‌سازد (۸ کاراکتری، یک‌بارمصرف، ۷ روز اعتبار)
+model ParentInvite {
+  id        String    @id @default(cuid())
+  code      String    @unique
+  studentId String
+  createdAt DateTime  @default(now())
+  // کد استفاده‌شده حذف نمی‌شود؛ usedAt ثبت می‌شود تا قابل پیگیری باشد
+  usedAt    DateTime?
+  expiresAt DateTime
+
+  student User @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId])
 }
 
 // اتصال یک به چند بین مشاور و دانش‌آموز؛ دانش‌آموز فقط یک مشاور دارد

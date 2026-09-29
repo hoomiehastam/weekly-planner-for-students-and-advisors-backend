@@ -86,6 +86,7 @@ async function getMyCard(req, res, next) {
 //   مشاور آموزشگاهی              → بدون کارت (اشتراکش با مؤسسه است — چیزی برای پرداخت ندارد)
 //   مدیر/سردار مؤسسه             → کارت سوپرادمین (SYSTEM)  → تمدید اشتراک کل مؤسسه
 //   مشاور مستقل                  → کارت سوپرادمین (SYSTEM)  → تمدید اشتراک خودش
+//   والد                          → کارت مشاور/مؤسسه‌ی فرزند  → تمدید اشتراک فرزند (targetId = فرزند)
 //   سوپرادمین                    → چیزی برای پرداخت ندارد (کارتش را در پنل مدیریت می‌گذارد)
 async function getDepositContext(req, res, next) {
   try {
@@ -93,6 +94,12 @@ async function getDepositContext(req, res, next) {
       where: { id: req.user.id },
       include: {
         subscription: true,
+        childLinks: {
+          where: { parentId: req.user.id },
+          select: { studentId: true },
+          orderBy: { createdAt: 'asc' },
+          take: 1,
+        },
         asStudentLinks: {
           where: { status: { in: ['PENDING', 'ACTIVE'] } },
           select: { advisorId: true },
@@ -186,6 +193,80 @@ async function getDepositContext(req, res, next) {
           monthlyPrice: resolveMonthlyPrice(advisorCard, null, user),
         };
       }
+    } else if (user.role === 'PARENT' && user.childLinks[0]) {
+      // والد → پرداخت برای اشتراک فرزند؛ کارت همان کارتی است که خود فرزند می‌بیند
+      // (مشاور مستقل → کارت مشاور؛ مشاور/فرزندِ مؤسسه‌ای → کارت مؤسسه)
+      const child = await prisma.user.findUnique({
+        where: { id: user.childLinks[0].studentId },
+        select: {
+          id: true,
+          fullName: true,
+          instituteId: true,
+          monthlyPrice: true,
+          asStudentLinks: {
+            where: { status: { in: ['PENDING', 'ACTIVE'] } },
+            select: { advisorId: true },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
+        },
+      });
+      if (!child) {
+        payee = null;
+      } else if (child.instituteId) {
+        const instCard = await prisma.cardSettings.findUnique({
+          where: { ownerKind_ownerId: { ownerKind: 'INSTITUTE', ownerId: child.instituteId } },
+        });
+        const inst = await prisma.institute.findUnique({ where: { id: child.instituteId }, select: { name: true, monthlyPrice: true } });
+        payee = {
+          kind: 'INSTITUTE',
+          card: instCard,
+          title: `شماره کارت مؤسسه ${inst?.name || ''}`.trim(),
+          targetKind: 'USER',
+          targetId: child.id,
+          targetTitle: `اشتراک ${child.fullName}`,
+          monthlyPrice: resolveMonthlyPrice(instCard, inst, child),
+        };
+      } else {
+        const childAdvisor = child.asStudentLinks[0]
+          ? await prisma.user.findUnique({
+              where: { id: child.asStudentLinks[0].advisorId },
+              select: { id: true, fullName: true, instituteId: true },
+            })
+          : null;
+        if (childAdvisor?.instituteId) {
+          // مشاورِ فرزند آموزشگاهی است → کارت مؤسسه
+          const instCard = await prisma.cardSettings.findUnique({
+            where: { ownerKind_ownerId: { ownerKind: 'INSTITUTE', ownerId: childAdvisor.instituteId } },
+          });
+          const inst = await prisma.institute.findUnique({ where: { id: childAdvisor.instituteId }, select: { name: true, monthlyPrice: true } });
+          payee = {
+            kind: 'INSTITUTE',
+            card: instCard,
+            title: `شماره کارت مؤسسه ${inst?.name || ''}`.trim(),
+            targetKind: 'USER',
+            targetId: child.id,
+            targetTitle: `اشتراک ${child.fullName}`,
+            monthlyPrice: resolveMonthlyPrice(instCard, inst, child),
+          };
+        } else if (childAdvisor) {
+          const advisorCard = await prisma.cardSettings.findUnique({
+            where: { ownerKind_ownerId: { ownerKind: 'USER', ownerId: childAdvisor.id } },
+          });
+          payee = {
+            kind: 'USER',
+            card: advisorCard,
+            title: `شماره کارت مشاور (${childAdvisor.fullName})`,
+            targetKind: 'USER',
+            targetId: child.id,
+            targetTitle: `اشتراک ${child.fullName}`,
+            monthlyPrice: resolveMonthlyPrice(advisorCard, null, child),
+          };
+        } else {
+          // فرزند هنوز به مشاوری متصل نشده — فعلاً چیزی برای پرداخت نیست
+          payee = null;
+        }
+      }
     } else if (user.role === 'ADVISOR' && user.instituteId) {
       // مشاور آموزشگاهی → اشتراکش با اشتراک مؤسسه برقرار است؛ چیزی برای پرداخت ندارد
       payee = null;
@@ -276,6 +357,34 @@ async function createDeposit(req, res, next) {
         // تمدید اشتراک یکی از اعضای مؤسسه‌ی من (مدیر/سردار خودش تعیین می‌کند) —
         // ولی اجازه فقط وقتی که خودم همان مدیر باشم، در approveDeposit هم دوباره چک می‌شود
         ownerId = targetUser.id;
+      } else if (
+        req.user.role === 'PARENT'
+        && targetUser.role === 'STUDENT'
+        && (await prisma.parentLink.findUnique({
+          where: { parentId_studentId: { parentId: req.user.id, studentId: targetUser.id } },
+        }))
+      ) {
+        // والد برای فرزندش پرداخت می‌کند — همان مسیر دانش‌آموز: تأییدکننده = مشاور (یا نماینده‌ی مؤسسه)
+        const link = await prisma.advisorStudentLink.findFirst({
+          where: { studentId: targetUser.id, status: { in: ['PENDING', 'ACTIVE'] } },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (!link) return res.status(400).json({ error: 'فرزند شما هنوز به مشاوری متصل نشده است' });
+        const childAdvisor = await prisma.user.findUnique({
+          where: { id: link.advisorId },
+          select: { instituteId: true },
+        });
+        if (targetUser.instituteId || childAdvisor?.instituteId) {
+          const instId = targetUser.instituteId || childAdvisor.instituteId;
+          const inst = await prisma.institute.findUnique({ where: { id: instId } });
+          const manager = inst?.leaderId
+            ? await prisma.user.findUnique({ where: { id: inst.leaderId } })
+            : await prisma.user.findFirst({ where: { role: 'INSTITUTE_MANAGER', instituteId: instId } });
+          if (!manager) return res.status(400).json({ error: 'نماینده‌ای برای تأیید واریز تعیین نشده است' });
+          ownerId = manager.id;
+        } else {
+          ownerId = link.advisorId;
+        }
       } else {
         return res.status(400).json({ error: 'مقصد واریز نامعتبر است' });
       }

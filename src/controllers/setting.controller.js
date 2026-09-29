@@ -1,4 +1,5 @@
 const prisma = require('../config/prisma');
+const { writeAuditLog } = require('../utils/audit');
 
 // کلید تنظیم «تاریخ کنکور» — روزشمار صفحه‌ی لندینگ از همین تاریخ محاسبه می‌شود.
 const KONKUR_DATE_KEY = 'konkur_exam_date';
@@ -32,10 +33,20 @@ async function setKonkurDate(req, res, next) {
       return res.status(400).json({ error: 'تاریخ کنکور باید در آینده باشد' });
     }
 
+    const before = await prisma.platformSetting.findUnique({ where: { key: KONKUR_DATE_KEY } });
+
     await prisma.platformSetting.upsert({
       where: { key: KONKUR_DATE_KEY },
       update: { value: date },
       create: { key: KONKUR_DATE_KEY, value: date },
+    });
+
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'KONKUR_DATE_SET',
+      targetType: 'SETTING',
+      targetId: KONKUR_DATE_KEY,
+      details: { before: before?.value || null, after: date },
     });
 
     res.json({ message: 'تاریخ کنکور به‌روزرسانی شد', konkurDate: date });

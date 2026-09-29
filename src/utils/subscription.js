@@ -25,6 +25,8 @@ function isSubscriptionActive(sub) {
 //     منقضی مؤسسه هم (مگر اشتراک فردی فعال داشته باشد).
 function hasEffectiveAccess(user, { userSub, instituteSub } = {}) {
   if (!user || user.role === 'SUPERADMIN') return true;
+  // والد خودش اشتراک ندارد؛ دیدنش تابع اشتراک فرزند است، نه خودش — همیشه آزاد
+  if (user.role === 'PARENT') return true;
   if (!userSub && !instituteSub) return true; // سازگاری با عقب
   return isSubscriptionActive(userSub) || isSubscriptionActive(instituteSub);
 }
@@ -36,6 +38,9 @@ function hasEffectiveAccess(user, { userSub, instituteSub } = {}) {
 function effectiveAccessInfo(user, { userSub, instituteSub } = {}) {
   if (!user || user.role === 'SUPERADMIN') {
     return { hasAccess: true, endsAt: null, source: 'SUPERADMIN' };
+  }
+  if (user.role === 'PARENT') {
+    return { hasAccess: true, endsAt: null, source: 'PARENT' };
   }
   if (!userSub && !instituteSub) {
     return { hasAccess: true, endsAt: null, source: 'UNSET' }; // سازگاری با عقب
