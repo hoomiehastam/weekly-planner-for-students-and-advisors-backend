@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const prisma = require('../config/prisma');
+const { toLatinDigits } = require('./../utils/faDigits');
 const { generateToken, setTokenCookie, clearTokenCookie } = require('../utils/jwt');
 const { normalizePhone, normalizeBio, validatePassword } = require('../utils/normalizers');
 const { sendPasswordResetEmail, sendOtpEmail } = require('../utils/mailer');
@@ -34,7 +35,13 @@ async function register(req, res, next) {
   try {
     const { fullName, email, password, role, advisorId, phone, bio, field, fields, instituteId, instituteCode, parentInviteCode } = req.body;
 
-    if (!fullName || !email || !password || !role) {
+    // ثبت‌نام والد یک‌مرحله‌ای است: فقط شماره تماس + رمز عبور (+ کد دعوت فرزند اختیاری).
+    // نام و ایمیل والد خودبخود از اطلاعات فرزند ساخته می‌شود؛ سایر نقش‌ها ایمیل الزامی دارند.
+    const isParent = role === 'PARENT';
+    if (!isParent && (!fullName || !email || !password || !role)) {
+      return res.status(400).json({ error: 'همه‌ی فیلدها الزامی هستند' });
+    }
+    if (!password || !role) {
       return res.status(400).json({ error: 'همه‌ی فیلدها الزامی هستند' });
     }
 
@@ -75,9 +82,38 @@ async function register(req, res, next) {
       advisorFields = fieldsArray;
     }
 
-    const existing = await prisma.user.findUnique({ where: { email } });
+    // ثبت‌نام والد: کد دعوت فرزند را زودتر می‌خوانیم تا «مشخصات خودبخود» از فرزند ساخته شود
+    // (یک‌مرحله‌ای بودن یعنی والد چیزی جز شماره و رمز وارد نمی‌کند)
+    let parentInvite = null;
+    if (isParent && parentInviteCode) {
+      parentInvite = await prisma.parentInvite.findUnique({
+        where: { code: String(parentInviteCode).trim().toUpperCase() },
+        include: { student: { select: { fullName: true } } },
+      });
+      // کد بد/منقضی مانع ثبت‌نام نیست — کاربر بعداً از داخل پنل می‌تواند اتصال بدهد
+    }
+
+    // نام و ایمیل:
+    //   والد: خودبخود از فرزند (یا شماره) ساخته می‌شود؛ هرچه والد بفرستد نادیده گرفته می‌شود.
+    //   بقیه نقش‌ها: همان‌طور که وارد کرده‌اند.
+    // ایمیل تولیدشده الگوی والد<شماره>@parents.daneshamozino.local دارد و فقط
+    // شناسه‌ی داخلی است؛ والد با شماره تماس وارد می‌شود نه ایمیل.
+    let finalFullName = fullName ? String(fullName).trim() : '';
+    let finalEmail = email ? String(email).trim() : '';
+    if (isParent) {
+      const normalizedPhoneForId = String(phone || '').replace(/[^\d]/g, '');
+      const digitsForId = normalizedPhoneForId || Date.now().toString();
+      finalEmail = `parent${digitsForId.slice(-10)}@parents.daneshamozino.local`;
+      finalFullName = parentInvite
+        ? `والد ${(parentInvite.student?.fullName || 'فرزند شما').trim()}`
+        : (finalFullName || 'والد');
+    }
+
+    const existing = await prisma.user.findUnique({ where: { email: finalEmail } });
     if (existing) {
-      return res.status(409).json({ error: 'این ایمیل قبلاً ثبت شده است' });
+      return res.status(409).json({ error: isParent
+        ? 'با این شماره تماس قبلاً حساب والد ساخته شده است. از صفحه‌ی ورود استفاده کن.'
+        : 'این ایمیل قبلاً ثبت شده است' });
     }
 
     let phoneValue = null;
@@ -168,8 +204,8 @@ async function register(req, res, next) {
     // (به ثبت‌نام‌های جدید ۱۴ روز TRIAL داده می‌شود تا چرخه‌ی واریز از روز اول معنا داشته باشد)
     const user = await prisma.user.create({
       data: {
-        fullName,
-        email,
+        fullName: finalFullName,
+        email: finalEmail,
         passwordHash,
         role,
         status,
@@ -196,23 +232,21 @@ async function register(req, res, next) {
     }
 
     // اگر والد با کد دعوت ثبت‌نام کرده، همین‌جا به فرزند وصلش می‌کنیم
+    // (کد قبلاً در بالای تابع خوانده شده تا نام والد از فرزند ساخته شود؛ اینجا فقط اعتبار و مصرف کد)
     let childName = null;
-    if (role === 'PARENT' && parentInviteCode) {
-      const invite = await prisma.parentInvite.findUnique({
-        where: { code: String(parentInviteCode).trim().toUpperCase() },
-      });
-      if (invite && !invite.usedAt && invite.expiresAt > new Date()) {
+    if (isParent && parentInvite) {
+      if (!parentInvite.usedAt && parentInvite.expiresAt > new Date()) {
         await prisma.$transaction([
           prisma.parentLink.create({
-            data: { parentId: user.id, studentId: invite.studentId },
+            data: { parentId: user.id, studentId: parentInvite.studentId },
           }),
           prisma.parentInvite.update({
-            where: { id: invite.id },
+            where: { id: parentInvite.id },
             data: { usedAt: new Date() },
           }),
         ]);
         childName = (await prisma.user.findUnique({
-          where: { id: invite.studentId },
+          where: { id: parentInvite.studentId },
           select: { fullName: true },
         }))?.fullName || null;
       } else {
@@ -254,18 +288,40 @@ async function register(req, res, next) {
   }
 }
 
-// ورود کاربر با ایمیل و رمز عبور (یا رمز یک‌بار مصرف OTP که سوپرادمین ساخته)
+// ورود کاربر با رمز عبور — شناسه می‌تواند «ایمیل» یا «شماره تماس» باشد (یا رمز یک‌بار مصرف OTP)
+// ورود با شماره مخصوصاً برای والدین است که در ثبت‌نام یک‌مرحله‌ای فقط شماره می‌دهند و ایمیلشان خودبخود ساخته می‌شود.
 async function login(req, res, next) {
   try {
-    const { email, password } = req.body;
+    const { email: identifierRaw, password } = req.body;
+    const identifier = String(identifierRaw || '').trim();
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'ایمیل و رمز عبور الزامی هستند' });
+    if (!identifier || !password) {
+      return res.status(400).json({ error: 'ایمیل/شماره تماس و رمز عبور الزامی هستند' });
     }
 
-    const user = await prisma.user.findUnique({ where: { email } });
+    // اگر ورودی شکل شماره تماس دارد (ارقام/+/فاصله، بدون @) به‌عنوان شماره جستجو می‌کنیم؛
+    // normalizePhone همان منطق ثبت‌نام را اعمال می‌کند (۰۹۱۲…، ۹۱۲…، +۹۸۹۱۲… و …)
+    let user = null;
+    const looksLikePhone = !identifier.includes('@') && /^[+\d][\d\s()-]{9,}$/.test(toLatinDigits(identifier));
+    if (looksLikePhone) {
+      let phoneValue = null;
+      try {
+        phoneValue = normalizePhone(identifier);
+      } catch {
+        phoneValue = null; // شکل شماره دارد ولی فرمتش درست نیست — همان پیام خطای عمومی برمی‌گردد
+      }
+      if (phoneValue) {
+        user = await prisma.user.findFirst({ where: { phone: phoneValue } });
+      }
+    }
+    if (!user && identifier.includes('@')) {
+      user = await prisma.user.findUnique({ where: { email: identifier } });
+    }
+    if (!user && !looksLikePhone) {
+      user = await prisma.user.findUnique({ where: { email: identifier } });
+    }
     if (!user) {
-      return res.status(401).json({ error: 'ایمیل یا رمز عبور اشتباه است' });
+      return res.status(401).json({ error: 'ایمیل/شماره تماس یا رمز عبور اشتباه است' });
     }
 
     // ۱) ابتدا OTP را بررسی می‌کنیم — اگر کاربر رمز یک‌بار مصرف داشته باشد و درست وارد کند،

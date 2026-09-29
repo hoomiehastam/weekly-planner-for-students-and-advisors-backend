@@ -31,8 +31,10 @@ const optionalText = (max) => z.string().trim().max(max).optional();
 const phoneSchema = z.string().trim().min(1, 'شماره تماس الزامی است').max(20, 'شماره تماس نامعتبر است');
 
 const registerSchema = z.object({
-  fullName: z.string().trim().min(2, 'نام باید حداقل ۲ کاراکتر باشد').max(80, 'نام نباید بیشتر از ۸۰ کاراکتر باشد'),
-  email: emailSchema,
+  fullName: z.string().trim().min(2, 'نام باید حداقل ۲ کاراکتر باشد').max(80, 'نام نباید بیشتر از ۸۰ کاراکتر باشد').optional(),
+  // ایمیل در ثبت‌نام والد اختیاری است (ثبت‌نام والد یک‌مرحله‌ای: فقط شماره + رمز)؛
+  // برای دانش‌آموز/مشاور الزامی بودنش در کنترلر بررسی می‌شود.
+  email: emailSchema.optional(),
   password: passwordSchema,
   role: z.enum(['STUDENT', 'ADVISOR', 'PARENT'], { errorMap: () => ({ message: 'نقش باید STUDENT، ADVISOR یا PARENT باشد' }) }),
   // شماره تماس در ثبت‌نام الزامی است (در پروفایل هم قابل ویرایش)
@@ -56,8 +58,10 @@ const registerSchema = z.object({
     .regex(/^[A-Z0-9]+$/, 'کد دعوت نامعتبر است').optional(),
 });
 
+// ورود با «ایمیل یا شماره تماس» — فیلد email هم مقدار ایمیل می‌گیرد هم شماره تماس؛
+// تشخیص ایمیل/شماره و جستجوی کاربر در کنترلر انجام می‌شود.
 const loginSchema = z.object({
-  email: z.string().trim().min(1, 'ایمیل الزامی است'),
+  email: z.string().trim().min(1, 'ایمیل یا شماره تماس الزامی است').max(150),
   password: z.string().min(1, 'رمز عبور الزامی است'),
 });
 

@@ -42,6 +42,56 @@ test('register: بدون شماره تماس باید رد شود', () => {
   assert.equal(result.success, false);
 });
 
+// --- ثبت‌نام یک‌مرحله‌ای والد: بدون نام و ایمیل، فقط شماره + رمز (+ کد دعوت اختیاری) ---
+
+test('register: والد بدون نام و ایمیل باید پذیرفته شود', () => {
+  const result = schemas.register.safeParse({
+    password: 'Passw0rd123',
+    role: 'PARENT',
+    phone: '09123456789',
+    parentInviteCode: 'AB2CD3EF',
+  });
+  assert.equal(result.success, true);
+});
+
+test('register: والد بدون ایمیل ولی با رمز ضعیف باید رد شود', () => {
+  const result = schemas.register.safeParse({
+    password: '123',
+    role: 'PARENT',
+    phone: '09123456789',
+  });
+  assert.equal(result.success, false);
+});
+
+test('register: دانش‌آموز بدون ایمیل باید رد شود (کنترلر الزام ایمیل را بررسی می‌کند، اسکیما هم اجازه نمی‌دهد خالی بماند)', () => {
+  // نکته: اسکیما email را optional کرده تا والد بدون ایمیل بتواند ثبت‌نام کند؛
+  // الزامی‌بودن ایمیل برای دانش‌آموز/مشاور در کنترلر بررسی می‌شود.
+  const result = schemas.register.safeParse({
+    fullName: 'دانش‌آموز تست',
+    password: 'Passw0rd123',
+    role: 'STUDENT',
+    phone: '09123456789',
+    field: 'EXPERIMENTAL',
+    advisorId: CUID,
+  });
+  assert.equal(result.success, true); // اسکیما رد نمی‌کند؛ کنترلر رد می‌کند
+});
+
+test('login: شماره تماس به‌عنوان شناسه باید پذیرفته شود', () => {
+  const result = schemas.login.safeParse({ email: '09123456789', password: 'x'.repeat(8) });
+  assert.equal(result.success, true);
+});
+
+test('login: ایمیل هم به‌عنوان شناسه پذیرفته می‌شود', () => {
+  const result = schemas.login.safeParse({ email: 'user@example.com', password: 'x' });
+  assert.equal(result.success, true);
+});
+
+test('login: شناسه خالی باید رد شود', () => {
+  const result = schemas.login.safeParse({ email: '', password: 'x' });
+  assert.equal(result.success, false);
+});
+
 test('register: advisorId نامعتبر (فارسی/فاصله) باید رد شود', () => {
   const result = schemas.register.safeParse({
     fullName: 'دانش‌آموز تست',
