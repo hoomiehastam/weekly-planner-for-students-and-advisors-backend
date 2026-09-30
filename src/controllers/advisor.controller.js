@@ -1,4 +1,5 @@
 const prisma = require('../config/prisma');
+const { pruneAdvisorStudentLinks } = require('../utils/orphans');
 
 // این فهرست بدون نیاز به ورود در دسترس است، چون دانش‌آموز باید قبل از ثبت‌نام مشاورش را انتخاب کند.
 // پارامترهای query:
@@ -127,6 +128,9 @@ async function listPublicInstitutes(req, res, next) {
 // مشاور: فهرست دانش‌آموزانی که درخواست اتصال داده‌اند و هنوز PENDING هستند
 async function listPendingStudentRequests(req, res, next) {
   try {
+    // لینک یتیم (دانش‌آموز حذف‌شده) رابطه‌ی الزامیِ student را null برمی‌گرداند
+    // و کل فهرست درخواست‌ها را خراب می‌کند — اول پاکش می‌کنیم.
+    await pruneAdvisorStudentLinks();
     const links = await prisma.advisorStudentLink.findMany({
       where: { advisorId: req.user.id, status: 'PENDING' },
       select: {
@@ -155,6 +159,7 @@ async function listPendingStudentRequests(req, res, next) {
 // مشاور: فهرست دانش‌آموزان فعال (تأییدشده) — برای کارهای روزمره
 async function listActiveStudents(req, res, next) {
   try {
+    await pruneAdvisorStudentLinks();
     const links = await prisma.advisorStudentLink.findMany({
       where: { advisorId: req.user.id, status: 'ACTIVE' },
       select: {

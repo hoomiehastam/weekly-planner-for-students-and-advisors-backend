@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const { sendOtpEmail } = require('../utils/mailer');
 const { remainingInstituteCapacity, CAPACITY_ERROR } = require('../utils/subscription');
 const { writeAuditLog } = require('../utils/audit');
+const { pruneAdvisorStudentLinks, deleteUserRelatedRows } = require('../utils/orphans');
 
 const OTP_LENGTH = 8;
 const OTP_TTL_HOURS_DEFAULT = 24;
@@ -189,6 +190,10 @@ async function rejectAdvisor(req, res, next) {
 // شامل شماره تماس مشاور، رشته‌های تخصص و دانش‌آموزان برای ارتباط
 async function listAdvisorsOverview(req, res, next) {
   try {
+    // اگر لینکِ یتیمی از قبل در دیتابیس مانده باشد (کاربر حذف‌شده ولی قید
+    // خارجی ساخته نشده)، خواندن رابطه‌ی الزامیِ student خطا می‌دهد و کل فهرست
+    // از کار می‌افتد؛ اول آن‌ها را پاک می‌کنیم.
+    await pruneAdvisorStudentLinks();
     const advisors = await prisma.user.findMany({
       where: { role: { in: ['ADVISOR', 'SUPERADMIN'] } },
       select: {
@@ -351,7 +356,7 @@ async function reactivateAdvisor(req, res, next) {
 
 // ====== حذف مشاور (hard delete) ======
 // این عمل قابل بازگشت نیست. همه‌ی داده‌های مرتبط (برنامه‌ها، آزمون‌ها، یادآورها، linkها)
-// به‌خاطر onDelete: Cascade حذف می‌شوند.
+// حذف می‌شوند — روی دیتابیس سالم با onDelete: Cascade و در هر حالت به‌صورت صریح.
 // توصیه: اول غیرفعال‌کردن، بعد اگر مطمئن بودید حذف کنید.
 async function deleteAdvisor(req, res, next) {
   try {
@@ -369,8 +374,18 @@ async function deleteAdvisor(req, res, next) {
     const studentCount = await prisma.advisorStudentLink.count({
       where: { advisorId: id },
     });
-    // حذف کاربر — همه‌ی روابط cascade می‌شوند
-    await prisma.user.delete({ where: { id } });
+    // ردیف‌های وابسته صریحاً پاک می‌شوند و بعد خودِ کاربر — به cascade دیتابیس
+    // وابسته نیستیم، چون روی سرورهایی که قید خارجی ساخته نشده لینک یتیم می‌ماند
+    // و کل فهرست دانش‌آموزان/مشاوران را می‌شکند (Inconsistent query result).
+    // تراکنش تعاملی با تایم‌اوت بیشتر: چند deleteMany پشت‌سرهم روی هاست اشتراکی
+    // ممکن است از ۵ ثانیه‌ی پیش‌فرض بگذرد و کل حذف را بشکند
+    await prisma.$transaction(
+      async (tx) => {
+        await deleteUserRelatedRows(tx, id);
+        await tx.user.delete({ where: { id } });
+      },
+      { timeout: 20000, maxWait: 10000 },
+    );
     await writeAuditLog({
       actorId: req.user.id,
       action: 'ADVISOR_DELETE',
@@ -700,9 +715,40 @@ async function createUserOtp(req, res, next) {
 }
 
 // ====== مدیریت دانش‌آموزان (سوپرادمین) ======
+// نگاشت یک ردیف خام دیتابیس به شکلی که پنل مصرف می‌کند.
+// جدا شده تا بشود تست واحد نوشت: هر فیلدی که در select خوانده می‌شود باید
+// اینجا هم برگردد، وگرنه پنل بی‌صدا داده‌ی کهنه/خالی نشان می‌دهد.
+// (همین اتفاق برای subscription و monthlyPrice افتاد: select می‌خواند ولی در
+// پاسخ نمی‌آمد، برای همین تغییر اشتراک در پنل دیده نمی‌شد.)
+function toStudentOverview(s) {
+  const activeLink = s.asStudentLinks.find((l) => l.status === 'ACTIVE');
+  const pendingLink = s.asStudentLinks.find((l) => l.status === 'PENDING');
+  return {
+    id: s.id,
+    fullName: s.fullName,
+    email: s.email,
+    phone: s.phone,
+    bio: s.bio,
+    field: s.field,
+    status: s.status,
+    photoUrl: s.photoUrl,
+    createdAt: s.createdAt,
+    institute: s.institute,
+    subscription: s.subscription,
+    monthlyPrice: s.monthlyPrice,
+    // مشاور فعلی (ACTIVE) و درخواست در انتظار (PENDING) — جدا از هم
+    advisor: activeLink ? activeLink.advisor : null,
+    pendingAdvisor: pendingLink ? pendingLink.advisor : null,
+    linkCreatedAt: (activeLink || pendingLink)?.createdAt || null,
+  };
+}
+
 // نمای کلی: همه‌ی دانش‌آموزان + مشاور متصل، مؤسسه، رشته، تماس و وضعیت
 async function listStudentsOverview(req, res, next) {
   try {
+    // لینک یتیم (کاربر حذف‌شده‌ای که ردیفش مانده) رابطه‌ی الزامیِ advisor را
+    // null برمی‌گرداند و کل فهرست را می‌شکند؛ اول پاکش می‌کنیم.
+    await pruneAdvisorStudentLinks();
     const students = await prisma.user.findMany({
       where: { role: 'STUDENT' },
       select: {
@@ -731,28 +777,7 @@ async function listStudentsOverview(req, res, next) {
       orderBy: { createdAt: 'desc' },
     });
 
-    res.json({
-      students: students.map((s) => {
-        const activeLink = s.asStudentLinks.find((l) => l.status === 'ACTIVE');
-        const pendingLink = s.asStudentLinks.find((l) => l.status === 'PENDING');
-        return {
-          id: s.id,
-          fullName: s.fullName,
-          email: s.email,
-          phone: s.phone,
-          bio: s.bio,
-          field: s.field,
-          status: s.status,
-          photoUrl: s.photoUrl,
-          createdAt: s.createdAt,
-          institute: s.institute,
-          // مشاور فعلی (ACTIVE) و درخواست در انتظار (PENDING) — جدا از هم
-          advisor: activeLink ? activeLink.advisor : null,
-          pendingAdvisor: pendingLink ? pendingLink.advisor : null,
-          linkCreatedAt: (activeLink || pendingLink)?.createdAt || null,
-        };
-      }),
-    });
+    res.json({ students: students.map(toStudentOverview) });
   } catch (err) {
     next(err);
   }
@@ -804,7 +829,8 @@ async function reactivateStudent(req, res, next) {
   }
 }
 
-// حذف دانش‌آموز (hard delete) — برنامه‌ها، آزمون‌ها و یادآورهایش cascade می‌شوند
+// حذف دانش‌آموز (hard delete) — برنامه‌ها، آزمون‌ها و یادآورهایش هم پاک می‌شوند
+// (روی دیتابیس سالم با cascade، و روی هر دیتابیسی به‌صورت صریح — پایین را ببینید)
 async function deleteStudent(req, res, next) {
   try {
     const { id } = req.params;
@@ -815,7 +841,18 @@ async function deleteStudent(req, res, next) {
     if (student.id === req.user.id) {
       return res.status(400).json({ error: 'نمی‌توانید حساب خودتان را حذف کنید' });
     }
-    await prisma.user.delete({ where: { id } });
+    // ردیف‌های وابسته صریحاً پاک می‌شوند و بعد خودِ کاربر — به cascade دیتابیس
+    // وابسته نیستیم، چون روی سرورهایی که قید خارجی ساخته نشده لینک یتیم می‌ماند
+    // و بعداً خواندن رابطه‌ی الزامیِ student کل پنل را می‌شکند.
+    // تراکنش تعاملی با تایم‌اوت بیشتر: چند deleteMany پشت‌سرهم روی هاست اشتراکی
+    // ممکن است از ۵ ثانیه‌ی پیش‌فرض بگذرد و کل حذف را بشکند
+    await prisma.$transaction(
+      async (tx) => {
+        await deleteUserRelatedRows(tx, id);
+        await tx.user.delete({ where: { id } });
+      },
+      { timeout: 20000, maxWait: 10000 },
+    );
     await writeAuditLog({
       actorId: req.user.id,
       action: 'STUDENT_DELETE',
@@ -1099,6 +1136,7 @@ async function listAuditLogs(req, res, next) {
 }
 
 module.exports = {
+  toStudentOverview,
   listPendingAdvisors,
   approveAdvisor,
   rejectAdvisor,

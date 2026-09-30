@@ -1,5 +1,6 @@
 const prisma = require('../config/prisma');
 const { remainingInstituteCapacity, CAPACITY_ERROR } = require('../utils/subscription');
+const { pruneAdvisorStudentLinks } = require('../utils/orphans');
 
 // ====== کنترلرهای مدیر مؤسسه (و «نماینده/سردار» تعیین‌شده توسط سوپرادمین) ======
 // قانون طلایی اسکوپینگ: هر کوئری با instituteId که از req.user (نه کلاینت) آمده
@@ -63,6 +64,9 @@ async function getInstituteMe(req, res, next) {
 // فقط اعضای مؤسسه‌ی خود مدیر — نه یک قطره از مؤسسه‌های دیگر یا مستقل‌ها
 async function listInstituteAdvisors(req, res, next) {
   try {
+    // لینک یتیم رابطه‌ی الزامیِ student را null برمی‌گرداند و کل فهرست را
+    // می‌شکند (Inconsistent query result) — اول پاکش می‌کنیم.
+    await pruneAdvisorStudentLinks();
     const advisors = await prisma.user.findMany({
       where: { instituteId: req.instituteId, role: 'ADVISOR' },
       select: {
