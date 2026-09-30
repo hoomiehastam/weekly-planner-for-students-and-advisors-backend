@@ -121,12 +121,30 @@ async function ensureForeignKeys() {
 
 async function main() {
   console.log('🧹 در حال پاک‌سازی ردیف‌های یتیم…');
-  const report = await pruneOrphanRows();
-  if (report.length === 0) {
-    console.log('✅ هیچ ردیف یتیمی پیدا نشد.');
+  const { deleted, failed } = await pruneOrphanRows();
+
+  if (failed.length > 0) {
+    console.error(
+      `❌ ${failed.length} جدول اصلاً بررسی نشد (کوئری شکست خورد). ` +
+        'پس نتیجه‌ی زیر قابل اعتماد نیست.',
+    );
+    for (const { table, message } of failed) console.error(`   - ${table}: ${message}`);
+    console.error(
+      'اگر پیام خطا «PANIC: timer has gone away» است، موتور Prisma روی این هاست ' +
+        'مشکل دارد؛ فایل prisma/repair-orphans.sql را در phpMyAdmin اجرا کنید ' +
+        '(بدون نیاز به Prisma).',
+    );
+  }
+
+  if (deleted.length === 0) {
+    console.log(
+      failed.length > 0
+        ? '⚠️  هیچ ردیف یتیمی در جدول‌های بررسی‌شده پیدا نشد.'
+        : '✅ هیچ ردیف یتیمی پیدا نشد.',
+    );
   } else {
-    for (const { table, deleted } of report) {
-      console.log(`   - ${table}: ${deleted} ردیف پاک شد`);
+    for (const { table, deleted: count } of deleted) {
+      console.log(`   - ${table}: ${count} ردیف پاک شد`);
     }
   }
 
@@ -138,6 +156,8 @@ async function main() {
     console.log(`🛠️  ${added.length} قید ساخته شد:`);
     for (const name of added) console.log(`   - ${name}`);
   }
+
+  if (failed.length > 0) process.exitCode = 1;
   console.log('🎉 تعمیر تمام شد.');
 }
 

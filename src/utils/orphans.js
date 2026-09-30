@@ -21,17 +21,35 @@
 //
 // توابع پاک‌سازی fail-safe هستند: خطا نمی‌دهند و فقط لاگ می‌کنند، چون پاک‌سازی
 // داده‌ی کمکی است و نباید خودِ درخواست را بشکند.
-// برای تعمیر کامل (پاک‌سازی + ساخت قیدهای خارجی جاافتاده) اسکریپت
-// prisma/repair-orphans.js را اجرا کنید.
+// برای تعمیر کامل (پاک‌سازی + ساخت قیدهای خارجی جاافتاده) یا:
+//   prisma/repair-orphans.js  (نیازمند موتور Prisma)
+//   prisma/repair-orphans.sql (بدون Prisma — برای phpMyAdmin/هاست‌هایی که موتور
+//                             Prisma در آن‌ها پانیک می‌کند)
 
 const prisma = require('../config/prisma');
 
+// پاک‌سازی لینک‌های یتیم در مسیرِ هر درخواست لازم نیست؛ داده‌ی یتیم خودش
+// تولید نمی‌شود (حذف کاربر صریحاً پاکش می‌کند) و اسکریپت تعمیر/جاروی بوت هم
+// یک‌بار کافی است. پس با یک تال‌تایم کوتاه محدودش می‌کنیم تا روی هاست‌های
+// ضعیف، کوئری اضافه به دیتابیس نرود.
+// نکته‌ی دوم: روی بعضی هاست‌های اشتراکی موتور Prisma با
+// «PANIC: timer has gone away» می‌میرد و کل کلاینت از کار می‌افتد؛
+// محدود کردن تعداد فراخوانی یعنی یک پانیک، کل پنل را نمی‌خواباند.
+const PRUNE_THROTTLE_MS = 60_000;
+let lastPruneAt = 0;
+
 /**
  * پاک‌کردن لینک‌های مشاور↔دانش‌آموزِ یتیم (که مشاور یا دانش‌آموزشان دیگر وجود ندارد).
- * روی هر کوئری‌ای که لینک را همراه رابطه‌ی student/advisor می‌خواند صدا زده می‌شود.
+ * روی هر کوئری‌ای که لینک را همراه رابطه‌ی student/advisor می‌خواند صدا زده می‌شود،
+ * ولی حداکثر یک‌بار در هر ۶۰ ثانیه واقعاً اجرا می‌شود.
+ * @param {object} [opts]
+ * @param {boolean} [opts.force] تال‌تایم را نادیده بگیر (برای اسکریپت تعمیر)
  * @returns {Promise<number>} تعداد ردیف‌های پاک‌شده
  */
-async function pruneAdvisorStudentLinks() {
+async function pruneAdvisorStudentLinks({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && now - lastPruneAt < PRUNE_THROTTLE_MS) return 0;
+  lastPruneAt = now;
   try {
     // LEFT JOIN + IS NULL یعنی «طرفِ مقابل پیدا نشد» — چون advisorId/studentId در
     // schema اجباری‌اند، نبودِ ردیف متناظر در User یعنی لینک یتیم.
@@ -43,6 +61,11 @@ async function pruneAdvisorStudentLinks() {
       WHERE s.\`id\` IS NULL OR a.\`id\` IS NULL
     `;
   } catch (err) {
+    // این خطا fail-safe است و فقط لاگ می‌شود. توجه: خطای
+    // «PANIC: timer has gone away» از موتور Prisma «non-recoverable» است، یعنی
+    // کلاینت بعد از آن موقتاً از کار می‌افتد و کوئری‌های بعدی هم خطا می‌دهند.
+    // برای همین تعداد فراخوانی محدود است و در آن حالت باید از
+    // prisma/repair-orphans.sql داخل phpMyAdmin استفاده کنید.
     console.error('[orphans] prune AdvisorStudentLinks failed:', err.message);
     return 0;
   }
@@ -50,10 +73,13 @@ async function pruneAdvisorStudentLinks() {
 
 /**
  * جاروی کاملِ ردیف‌های یتیم در همه‌ی جدول‌هایی که به User/Institute اشاره می‌کنند.
- * یک‌بار در شروع سرور و بعد از هر بار با اسکریپت تعمیر اجرا می‌شود
- * (به‌صورت خودکار، وگرنه کوئری‌هایی که رابطه‌ی «الزامی» دارند می‌شکنند).
+ * با اسکریپت تعمیر اجرا می‌شود (یا در شروع سرور، اگر ORPHAN_SWEEP_ON_BOOT=1 باشد).
  * ترتیب از بچه به والد است تا هر جدول قبل از والدش پاک شود.
- * @returns {Promise<Array<{table: string, deleted: number}>>}
+ *
+ * نکته‌ی مهم: خطاها برگردانده می‌شوند و پنهان نمی‌شوند. روی هاست‌هایی که موتور
+ * Prisma پانیک می‌کند («PANIC: timer has gone away») هر کوئری می‌شکند؛ اگر این
+ * خطاها نادیده گرفته شوند، گزارش «هیچ ردیف یتیمی نبود» غلط از آب درمی‌آید.
+ * @returns {Promise<{deleted: Array<{table: string, deleted: number}>, failed: Array<{table: string, message: string}>}>}
  */
 async function pruneOrphanRows() {
   const sweeps = [
@@ -79,17 +105,18 @@ async function pruneOrphanRows() {
     ['AuditLog', 'DELETE a FROM `AuditLog` a LEFT JOIN `User` u ON u.`id` = a.`actorId` WHERE a.`actorId` IS NOT NULL AND u.`id` IS NULL'],
   ];
 
-  const report = [];
+  const deleted = [];
+  const failed = [];
   for (const [table, sql] of sweeps) {
     try {
-      const deleted = await prisma.$executeRawUnsafe(sql);
-      if (deleted > 0) report.push({ table, deleted });
+      const count = await prisma.$executeRawUnsafe(sql);
+      if (count > 0) deleted.push({ table, deleted: count });
     } catch (err) {
       // یک جدولِ غایب (مثلاً روی دیتابیسی که مایگریشنش اعمال نشده) نباید بقیه را متوقف کند
-      console.error(`[orphans] sweep ${table} failed:`, err.message);
+      failed.push({ table, message: err.message });
     }
   }
-  return report;
+  return { deleted, failed };
 }
 
 /**
