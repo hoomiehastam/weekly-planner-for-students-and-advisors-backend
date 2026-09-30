@@ -22,6 +22,8 @@ const LOCAL_EMAIL_DOMAIN = 'local.daneshamozino.ir';
 // چون فرانت بعد از ورود getMe را صدا می‌زند و وضعیت دقیق از آنجا می‌آید.
 function isRegistrationComplete(user) {
   if (user.role === 'PARENT') return true;
+  if (user.role === 'SUPERADMIN') return true;
+  if (user.role === 'INSTITUTE_MANAGER') return true;
   if (user.role === 'STUDENT') return !!user.field;
   if (user.role === 'ADVISOR') return true; // دقیقش با getMe — فرانت از آن استفاده می‌کند
   return true;
@@ -275,10 +277,12 @@ async function register(req, res, next) {
       const token = generateToken(user);
       setTokenCookie(res, token);
       // registrationComplete: آیا مشخصات ضروری نقش از قبل کامل است؟
-      //   والد: همیشه بله؛ دانش‌آموز: وقتی رشته دارد؛ مشاور: وقتی تخصص دارد.
-      //   بقیه باید بعد از ورود کارت «تکمیل ثبت‌نام» داشبورد را پر کنند.
+      //   والد/سوپرادمین/مدیر مؤسسه: همیشه بله (مودال تکمیل نمی‌بینند)؛
+      //   دانش‌آموز: وقتی رشته دارد؛ مشاور: وقتی تخصص دارد.
       const registrationComplete =
         role === 'PARENT'
+        || role === 'SUPERADMIN'
+        || role === 'INSTITUTE_MANAGER'
         || (role === 'STUDENT' && !!studentField)
         || (role === 'ADVISOR' && Array.isArray(advisorFields) && advisorFields.length > 0);
       return res.status(201).json({
@@ -468,8 +472,13 @@ async function getMe(req, res) {
   }
 
   // آیا مشخصات ضروری نقش کامل است؟ (ثبت‌نام مینیمال: اول فقط شماره+رمز)
+  // سوپرادمین و مدیر مؤسسه اصلاً مودال تکمیل را نبینند — حساب‌شان چیز اضافه‌ای ندارد.
+  // کاربران فعلی سیستم چون field/fields دارند از قبل true می‌گیرند؛ مودال فقط
+  // برای تازه‌ثبت‌نام‌های بدون رشته باز می‌ماند.
   const registrationComplete =
     req.user.role === 'PARENT'
+    || req.user.role === 'SUPERADMIN'
+    || req.user.role === 'INSTITUTE_MANAGER'
     || (req.user.role === 'STUDENT' && !!req.user.field)
     || (req.user.role === 'ADVISOR' && Array.isArray(advisorFields) && advisorFields.length > 0);
 
@@ -657,6 +666,8 @@ async function updateMyProfile(req, res, next) {
     // وضعیت تکمیل ثبت‌نام بعد از این به‌روزرسانی
     const registrationComplete =
       role === 'PARENT'
+      || role === 'SUPERADMIN'
+      || role === 'INSTITUTE_MANAGER'
       || (role === 'STUDENT' && !!updated.field)
       || (role === 'ADVISOR' && Array.isArray(updatedFields) && updatedFields.length > 0);
 
