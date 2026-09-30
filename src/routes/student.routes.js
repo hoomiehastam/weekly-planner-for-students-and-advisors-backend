@@ -7,6 +7,7 @@ const {
   getMyWeeklyGoal,
   setStudentWeeklyGoal,
   getMyAdvisor,
+  chooseMyAdvisor,
 } = require('../controllers/student.controller');
 
 // مشاور: فهرست دانش‌آموزهای خودش (شامل شماره تماس و توضیحات)
@@ -17,6 +18,9 @@ router.get('/me/weekly-goal', authenticate, requireRole('STUDENT'), getMyWeeklyG
 
 // دانش‌آموز: دریافت اطلاعات مشاور خودش (نام، ایمیل، شماره تماس، توضیحات)
 router.get('/me/advisor', authenticate, requireRole('STUDENT'), getMyAdvisor);
+
+// دانش‌آموز: انتخاب مشاور توسط خودش (بعد از تکمیل رشته داخل پنل)
+router.post('/me/advisor', authenticate, requireRole('STUDENT'), validate(schemas.chooseAdvisor), chooseMyAdvisor);
 
 // مشاور: تنظیم هدف هفتگی برای یک دانش‌آموز
 router.put(

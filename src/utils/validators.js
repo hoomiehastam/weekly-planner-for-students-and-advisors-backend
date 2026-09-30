@@ -30,14 +30,16 @@ const optionalText = (max) => z.string().trim().max(max).optional();
 
 const phoneSchema = z.string().trim().min(1, 'شماره تماس الزامی است').max(20, 'شماره تماس نامعتبر است');
 
+// ثبت‌نام مینیمال: فقط رمز عبور + نقش (+ شماره تماس برای والد) الزامی است.
+// نام، ایمیل، رشته، مؤسسه و مشاور همه اختیاری‌اند — بقیه‌ی مشخصات بعد از ورود
+// داخل پنل تکمیل می‌شود (کارت «تکمیل ثبت‌نام» داشبورد). ایمیل نام‌آورده که کلید
+// یکتایی است، در کنترلر خودبخود ساخته می‌شود.
 const registerSchema = z.object({
   fullName: z.string().trim().min(2, 'نام باید حداقل ۲ کاراکتر باشد').max(80, 'نام نباید بیشتر از ۸۰ کاراکتر باشد').optional(),
-  // ایمیل در ثبت‌نام والد اختیاری است (ثبت‌نام والد یک‌مرحله‌ای: فقط شماره + رمز)؛
-  // برای دانش‌آموز/مشاور الزامی بودنش در کنترلر بررسی می‌شود.
   email: emailSchema.optional(),
   password: passwordSchema,
   role: z.enum(['STUDENT', 'ADVISOR', 'PARENT'], { errorMap: () => ({ message: 'نقش باید STUDENT، ADVISOR یا PARENT باشد' }) }),
-  // شماره تماس در ثبت‌نام الزامی است (در پروفایل هم قابل ویرایش)
+  // شماره تماس برای همه الزامی است (ورود والد با شماره + هماهنگی مشاور ↔ دانش‌آموز)
   phone: phoneSchema,
   bio: optionalText(500),
   advisorId: idSchema.optional(),
@@ -168,6 +170,21 @@ const profileSchema = z.object({
   fullName: z.string().trim().min(2, 'نام باید حداقل ۲ کاراکتر باشد').max(80).optional(),
   phone: phoneSchema.optional().or(z.literal('').transform(() => '')),
   bio: optionalText(500),
+  // تکمیل ثبت‌نام داخل پنل: رشته‌ی دانش‌آموز (تکی)
+  field: z.enum(['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'], {
+    errorMap: () => ({ message: 'رشته باید یکی از HUMANITIES، MATH_PHYSICS یا EXPERIMENTAL باشد' }),
+  }).optional(),
+  // رشته‌های تخصص مشاور (چندتا) — خالی یعنی پاک‌کردن همه
+  fields: z.array(
+    z.enum(['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'])
+  ).max(3, 'نهایتاً ۳ رشته').optional(),
+  // عضویت در مؤسسه — null یعنی مستقل
+  instituteId: z.string().cuid('شناسه‌ی مؤسسه نامعتبر است').optional().nullable(),
+});
+
+// انتخاب مشاور توسط خود دانش‌آموز (بعد از تکمیل رشته داخل پنل)
+const chooseAdvisorSchema = z.object({
+  advisorId: idSchema,
 });
 
 const reminderSchema = z.object({
@@ -227,6 +244,7 @@ module.exports = {
     register: registerSchema,
     login: loginSchema,
     profile: profileSchema,
+    chooseAdvisor: chooseAdvisorSchema,
     reminder: reminderSchema,
     tag: tagSchema,
     weeklyGoal: weeklyGoalSchema,

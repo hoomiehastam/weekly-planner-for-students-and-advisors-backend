@@ -12,6 +12,20 @@ const RESET_TOKEN_BYTES = 32;
 const RESET_TOKEN_EXPIRY_HOURS = 1;
 // دوره‌ی آزمایشی پیش‌فرض اشتراک فردی تازه‌ثبت‌نام‌ها
 const TRIAL_DAYS = 14;
+// پیشوند ایمیل داخلی کاربرانی که هنگام ثبت‌نام ایمیل نداده‌اند —
+// این ایمیل فقط شناسه‌ی یکتای دیتابیس است؛ ورود با شماره تماس انجام می‌شود.
+const LOCAL_EMAIL_DOMAIN = 'local.daneshamozino.ir';
+
+// آیا مشخصات ضروری نقش کامل است؟ (ثبت‌نام مینیمال: اول فقط شماره+رمز)
+//   والد: همیشه کامل؛ دانش‌آموز: وقتی رشته دارد؛ مشاور: وقتی حداقل یک تخصص دارد.
+// عمداً بدون کوئری اضافه — fields مشاور در login نیاز به کوئری جدا دارد که لازم نیست،
+// چون فرانت بعد از ورود getMe را صدا می‌زند و وضعیت دقیق از آنجا می‌آید.
+function isRegistrationComplete(user) {
+  if (user.role === 'PARENT') return true;
+  if (user.role === 'STUDENT') return !!user.field;
+  if (user.role === 'ADVISOR') return true; // دقیقش با getMe — فرانت از آن استفاده می‌کند
+  return true;
+}
 
 // ====== تنظیمات ورود خودخدمتی با کد ایمیلی (OTP) ======
 const OTP_LOGIN_LENGTH = 6; // کد عددی ۶ رقمی
@@ -35,51 +49,39 @@ async function register(req, res, next) {
   try {
     const { fullName, email, password, role, advisorId, phone, bio, field, fields, instituteId, instituteCode, parentInviteCode } = req.body;
 
-    // ثبت‌نام والد یک‌مرحله‌ای است: فقط شماره تماس + رمز عبور (+ کد دعوت فرزند اختیاری).
-    // نام و ایمیل والد خودبخود از اطلاعات فرزند ساخته می‌شود؛ سایر نقش‌ها ایمیل الزامی دارند.
-    const isParent = role === 'PARENT';
-    if (!isParent && (!fullName || !email || !password || !role)) {
-      return res.status(400).json({ error: 'همه‌ی فیلدها الزامی هستند' });
-    }
+    // ثبت‌نام مینیمال — همه‌ی نقش‌ها فقط شماره تماس + رمز می‌دهند؛ بقیه‌ی مشخصات
+    // بعد از ورود، داخل پنل تکمیل می‌شود. شماره برای همه الزامی است: والد با آن
+    // وارد می‌شود و برای بقیه، خط ارتباط مشاور ↔ دانش‌آموز از همین‌جا می‌آید.
     if (!password || !role) {
-      return res.status(400).json({ error: 'همه‌ی فیلدها الزامی هستند' });
+      return res.status(400).json({ error: 'رمز عبور و نقش الزامی هستند' });
     }
-
     if (!['STUDENT', 'ADVISOR', 'PARENT'].includes(role)) {
       return res.status(400).json({ error: 'نقش انتخاب‌شده معتبر نیست' });
     }
+    const isParent = role === 'PARENT';
+    if (!String(phone || '').trim()) {
+      return res.status(400).json({ error: 'شماره تماس الزامی است' });
+    }
 
-    // اعتبارسنجی رشته‌ی تحصیلی
-    //   دانش‌آموز: field تکی الزامی
-    //   مشاور: fields آرایه‌ای الزامی (حداقل یک رشته)
-    //   والد: بدون رشته — فقط کد دعوت فرزند را می‌دهد (اختیاری هنگام ثبت‌نام؛ بعداً هم می‌تواند وارد کند)
+    // اعتبارسنجی رشته‌ی تحصیلی — همه‌ی رشته‌ها اختیاری‌اند (بعداً داخل پنل تکمیل می‌شود)
     let studentField = null;
     let advisorFields = null;
     if (role === 'PARENT') {
       // والد مشاور و مؤسسه ندارد — فقط فیلدهای پایه را پر می‌کند
     } else if (role === 'STUDENT') {
-      if (!field || !['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'].includes(field)) {
-        return res.status(400).json({ error: 'انتخاب رشته‌ی تحصیلی الزامی است' });
-      }
-      studentField = field;
+      studentField = field && ['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'].includes(field) ? field : null;
     } else {
-      // ADVISOR
-      // fields آرایه‌ای قبول می‌کنیم؛ اگر field تکی هم ارسال شده، آن را به آرایه اضافه می‌کنیم
+      // ADVISOR — fields آرایه‌ای اختیاری
       let fieldsArray = Array.isArray(fields) ? fields : [];
       if (field && !fieldsArray.includes(field)) {
         fieldsArray = [field, ...fieldsArray];
       }
-      // حذف تکراری‌ها
       fieldsArray = [...new Set(fieldsArray)];
-      if (fieldsArray.length === 0) {
-        return res.status(400).json({ error: 'انتخاب حداقل یک رشته‌ی تخصص الزامی است' });
-      }
-      // اعتبارسنجی مقادیر
       const invalid = fieldsArray.find((f) => !['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'].includes(f));
       if (invalid) {
         return res.status(400).json({ error: 'رشته‌ی تحصیلی نامعتبر است' });
       }
-      advisorFields = fieldsArray;
+      advisorFields = fieldsArray.length > 0 ? fieldsArray : null;
     }
 
     // ثبت‌نام والد: کد دعوت فرزند را زودتر می‌خوانیم تا «مشخصات خودبخود» از فرزند ساخته شود
@@ -94,10 +96,11 @@ async function register(req, res, next) {
     }
 
     // نام و ایمیل:
-    //   والد: خودبخود از فرزند (یا شماره) ساخته می‌شود؛ هرچه والد بفرستد نادیده گرفته می‌شود.
-    //   بقیه نقش‌ها: همان‌طور که وارد کرده‌اند.
-    // ایمیل تولیدشده الگوی والد<شماره>@parents.daneshamozino.local دارد و فقط
-    // شناسه‌ی داخلی است؛ والد با شماره تماس وارد می‌شود نه ایمیل.
+    //   با ثبت‌نام مینیمال، هیچ کاربری چیزی برای نام/ایمیل الزامی ندارد؛
+    //   اگر نداد، هر دو خودبخود ساخته می‌شود (نام موقت + ایمیل داخلی یکتا).
+    //   کاربر بعداً از پنل (پروفایل / کارت تکمیل ثبت‌نام) تکمیلش می‌کند.
+    //   والد: نام از فرزندِ کد دعوت ساخته می‌شود و ایمیلش همیشه داخلی است؛
+    //   ورود والد با شماره تماس انجام می‌شود نه ایمیل.
     let finalFullName = fullName ? String(fullName).trim() : '';
     let finalEmail = email ? String(email).trim() : '';
     if (isParent) {
@@ -107,6 +110,14 @@ async function register(req, res, next) {
       finalFullName = parentInvite
         ? `والد ${(parentInvite.student?.fullName || 'فرزند شما').trim()}`
         : (finalFullName || 'والد');
+    } else if (!finalFullName) {
+      finalFullName = role === 'STUDENT' ? 'دانش‌آموز جدید' : 'مشاور جدید';
+    }
+    if (!finalEmail) {
+      // ایمیل داخلی یکتا: پیشوند نقش + ۱۰ رقم آخر شماره (یا تصادفی) + تایم‌استمپ کوتاه
+      const digits = String(phone || '').replace(/[^\d]/g, '').slice(-10) || crypto.randomBytes(5).toString('hex');
+      const rolePrefix = role.toLowerCase();
+      finalEmail = `${rolePrefix}.${digits}.${Date.now().toString(36)}@${LOCAL_EMAIL_DOMAIN}`;
     }
 
     const existing = await prisma.user.findUnique({ where: { email: finalEmail } });
@@ -120,11 +131,8 @@ async function register(req, res, next) {
     let bioValue = null;
     let passwordValue;
     try {
-      // شماره تماس الزامی است (برای ارتباط مشاور ↔ دانش‌آموز و پشتیبانی)
+      // شماره تماس الزامی است (بالای تابع چک شد که خالی نباشد) — فرمت معتبر هم لازم است
       phoneValue = normalizePhone(phone);
-      if (!phoneValue) {
-        return res.status(400).json({ error: 'شماره تماس الزامی است' });
-      }
       bioValue = normalizeBio(bio);
       passwordValue = validatePassword(password);
     } catch (err) {
@@ -161,14 +169,12 @@ async function register(req, res, next) {
       }
     }
 
-    // دانش‌آموز باید حتماً یک مشاور فعال را انتخاب کند
-    // + مرز مؤسسه: مشاور و دانش‌آموز باید هم‌مؤسسه باشند یا هر دو مستقل
-    // + مشاور باید رشته‌ی دانش‌آموز را در تخصص‌هایش داشته باشد
+    // مشاور برای دانش‌آموز اختیاری است (بعداً داخل پنل انتخاب می‌کند)؛
+    // اگر ارسال شده باشد اعتبارسنجی کامل می‌شود:
+    //   + مرز مؤسسه: مشاور و دانش‌آموز باید هم‌مؤسسه باشند یا هر دو مستقل
+    //   + مشاور باید رشته‌ی دانش‌آموز را در تخصص‌هایش داشته باشد
     let advisor = null;
-    if (role === 'STUDENT') {
-      if (!advisorId) {
-        return res.status(400).json({ error: 'انتخاب مشاور برای دانش‌آموز الزامی است' });
-      }
+    if (role === 'STUDENT' && advisorId) {
       // سوپرادمین هم می‌تواند مشاور باشد (در فهرست مشاوران مستقل نمایش داده می‌شود)
       advisor = await prisma.user.findFirst({
         where: { id: advisorId, role: { in: ['ADVISOR', 'SUPERADMIN'] }, status: 'ACTIVE' },
@@ -186,12 +192,14 @@ async function register(req, res, next) {
             : 'این مشاور عضو یک مؤسسه است؛ برای ثبت‌نام نزد او باید عضو همان مؤسسه باشی',
         });
       }
-      // بررسی تطابق رشته: رشته‌ی دانش‌آموز باید در تخصص‌های مشاور باشد
-      const advisorFieldList = advisor.advisorFields.map((af) => af.field);
-      if (!advisorFieldList.includes(studentField)) {
-        return res.status(400).json({
-          error: 'این مشاور در رشته‌ی شما تخصص ندارد. لطفاً مشاوری از همان رشته انتخاب کنید.',
-        });
+      if (studentField) {
+        // بررسی تطابق رشته: رشته‌ی دانش‌آموز باید در تخصص‌های مشاور باشد
+        const advisorFieldList = advisor.advisorFields.map((af) => af.field);
+        if (!advisorFieldList.includes(studentField)) {
+          return res.status(400).json({
+            error: 'این مشاور در رشته‌ی شما تخصص ندارد. لطفاً مشاوری از همان رشته انتخاب کنید.',
+          });
+        }
       }
     }
 
@@ -225,7 +233,7 @@ async function register(req, res, next) {
       },
     });
 
-    if (role === 'STUDENT') {
+    if (role === 'STUDENT' && advisor) {
       await prisma.advisorStudentLink.create({
         data: { advisorId: advisor.id, studentId: user.id, status: 'PENDING' },
       });
@@ -266,15 +274,21 @@ async function register(req, res, next) {
     if (status === 'ACTIVE') {
       const token = generateToken(user);
       setTokenCookie(res, token);
+      // registrationComplete: آیا مشخصات ضروری نقش از قبل کامل است؟
+      //   والد: همیشه بله؛ دانش‌آموز: وقتی رشته دارد؛ مشاور: وقتی تخصص دارد.
+      //   بقیه باید بعد از ورود کارت «تکمیل ثبت‌نام» داشبورد را پر کنند.
+      const registrationComplete =
+        role === 'PARENT'
+        || (role === 'STUDENT' && !!studentField)
+        || (role === 'ADVISOR' && Array.isArray(advisorFields) && advisorFields.length > 0);
       return res.status(201).json({
         message: role === 'PARENT'
           ? childName
             ? `ثبت‌نام انجام شد و به «${childName}» وصل شدی`
             : 'ثبت‌نام انجام شد. با کد دعوت فرزندت از پنل خودت وصل شو'
-          : role === 'STUDENT'
-            ? 'ثبت‌نام با موفقیت انجام شد. درخواست اتصال به مشاور ارسال شد — بعد از تأیید مشاور، به برنامه‌ی هفتگی دسترسی خواهی داشت.'
-            : 'ثبت‌نام با موفقیت انجام شد',
+          : 'ثبت‌نام انجام شد',
         user: { id: user.id, fullName: user.fullName, role: user.role, field: user.field },
+        registrationComplete,
       });
     }
 
@@ -351,20 +365,22 @@ async function login(req, res, next) {
           data: { otpHash: null, otpExpiresAt: null },
         });
 
-        const token = generateToken(user);
-        setTokenCookie(res, token);
-        // اگر mustChangePassword=true باشد، فرانت کاربر را به /change-password هدایت می‌کند
-        return res.json({
-          user: {
-            id: user.id,
-            fullName: user.fullName,
-            role: user.role,
-            phone: user.phone,
-            bio: user.bio,
-            photoUrl: user.photoUrl,
-            mustChangePassword: user.mustChangePassword === true,
-          },
-        });
+      const token = generateToken(user);
+      setTokenCookie(res, token);
+      // اگر mustChangePassword=true باشد، فرانت کاربر را به /change-password هدایت می‌کند
+      return res.json({
+        user: {
+          id: user.id,
+          fullName: user.fullName,
+          role: user.role,
+          phone: user.phone,
+          bio: user.bio,
+          field: user.field,
+          photoUrl: user.photoUrl,
+          mustChangePassword: user.mustChangePassword === true,
+          registrationComplete: isRegistrationComplete(user),
+        },
+      });
       }
       // OTP درست نبود — به مسیر عادی رمز عبور می‌رویم
     } else if (user.otpHash && user.otpExpiresAt && user.otpExpiresAt <= new Date()) {
@@ -416,8 +432,10 @@ async function login(req, res, next) {
         role: user.role,
         phone: user.phone,
         bio: user.bio,
+        field: user.field,
         photoUrl: user.photoUrl,
         mustChangePassword: false,
+        registrationComplete: isRegistrationComplete(user),
       },
     });
   } catch (err) {
@@ -439,6 +457,22 @@ async function getMe(req, res) {
     select: { id: true, name: true },
   });
 
+  // رشته‌های تخصص مشاور — فرانت برای کارت «تکمیل ثبت‌نام» و فیلتر مشاوران لازمش دارد
+  let advisorFields = null;
+  if (req.user.role === 'ADVISOR') {
+    const afRows = await prisma.advisorField.findMany({
+      where: { advisorId: req.user.id },
+      select: { field: true },
+    });
+    advisorFields = afRows.map((af) => af.field);
+  }
+
+  // آیا مشخصات ضروری نقش کامل است؟ (ثبت‌نام مینیمال: اول فقط شماره+رمز)
+  const registrationComplete =
+    req.user.role === 'PARENT'
+    || (req.user.role === 'STUDENT' && !!req.user.field)
+    || (req.user.role === 'ADVISOR' && Array.isArray(advisorFields) && advisorFields.length > 0);
+
   res.json({
     user: {
       id: req.user.id,
@@ -448,11 +482,14 @@ async function getMe(req, res) {
       phone: req.user.phone,
       bio: req.user.bio,
       field: req.user.field,
+      fields: advisorFields,
       photoUrl: req.user.photoUrl,
       // نمایندگی مؤسسه — null یعنی نماینده نیست
       ledInstitute: ledInstitute || null,
       // برای اینکه فرانت بداند آیا باید صفحه‌ی تغییر رمز اجباری را نشان دهد یا خیر
       mustChangePassword: req.user.mustChangePassword === true,
+      // ثبت‌نام مینیمال: false یعنی کارت «تکمیل ثبت‌نام» در داشبورد باز بماند
+      registrationComplete,
     },
     // وضعیت اشتراک برای نمایش در هدر و هشدار نزدیکی انقضا
     access: {
@@ -476,10 +513,75 @@ async function getMe(req, res) {
 //   - ADVISOR و SUPERADMIN: fullName، phone و bio قابل ویرایش است
 async function updateMyProfile(req, res, next) {
   try {
-    const { fullName, phone, bio } = req.body;
+    const { fullName, phone, bio, field, fields, instituteId } = req.body;
     const role = req.user.role;
 
     const data = {};
+
+    // تکمیل ثبت‌نام داخل پنل — رشته‌ی دانش‌آموز (تکی)
+    if (field !== undefined) {
+      if (role !== 'STUDENT') {
+        return res.status(403).json({ error: 'فقط دانش‌آموز رشته‌ی تحصیلی دارد' });
+      }
+      if (!field) {
+        return res.status(400).json({ error: 'رشته‌ی تحصیلی نامعتبر است' });
+      }
+      data.field = field;
+    }
+
+    // تکمیل ثبت‌نام داخل پنل — رشته‌های تخصص مشاور (چندتا)
+    if (fields !== undefined) {
+      if (role !== 'ADVISOR') {
+        return res.status(403).json({ error: 'فقط مشاور رشته‌ی تخصص دارد' });
+      }
+      const fieldsArray = [...new Set(Array.isArray(fields) ? fields : [])];
+      const invalid = fieldsArray.find((f) => !['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'].includes(f));
+      if (invalid) {
+        return res.status(400).json({ error: 'رشته‌ی تحصیلی نامعتبر است' });
+      }
+      // تراکنش: پاک‌کردن قبلی‌ها + نوشتن جدیدها (آرایه‌ی خالی یعنی پاک‌کردن)
+      await prisma.$transaction([
+        prisma.advisorField.deleteMany({ where: { advisorId: req.user.id } }),
+        ...(fieldsArray.length > 0
+          ? [prisma.advisorField.createMany({
+              data: fieldsArray.map((f) => ({ advisorId: req.user.id, field: f })),
+            })]
+          : []),
+      ]);
+      // اگر مشاور دیگر هیچ تخصصی ندارد و دانش‌آموزی هم وصل نیست، لینک‌هایش را نمی‌خوریم؛
+      // فقط وضعیت تکمیل بودن ثبت‌نام پایین می‌آید (فرانت کارت را دوباره نشان می‌دهد).
+    }
+
+    // تکمیل ثبت‌نام داخل پنل — عضویت در مؤسسه (دانش‌آموز/مشاور)
+    if (instituteId !== undefined) {
+      if (role === 'PARENT' || role === 'INSTITUTE_MANAGER') {
+        return res.status(403).json({ error: 'این نقش عضو مؤسسه نمی‌شود' });
+      }
+      if (instituteId === null || instituteId === '') {
+        data.instituteId = null;
+      } else if (instituteId !== req.user.instituteId) {
+        // عضویت جدید/تغییر مؤسسه — مثل ثبت‌نام: بررسی ظرفیت + رفتن به صف تأیید مدیر
+        const inst = await prisma.institute.findUnique({ where: { id: instituteId } });
+        if (!inst) {
+          return res.status(400).json({ error: 'مؤسسه‌ی انتخاب‌شده یافت نشد' });
+        }
+        if (inst.status !== 'ACTIVE') {
+          return res.status(400).json({ error: 'این مؤسسه هنوز تأیید نشده است' });
+        }
+        const [sub, currentCount] = await Promise.all([
+          prisma.instituteSubscription.findUnique({ where: { instituteId: inst.id } }),
+          prisma.user.count({ where: { instituteId: inst.id, role } }),
+        ]);
+        const capacity = remainingInstituteCapacity(sub, role, currentCount);
+        if (!capacity.ok) {
+          return res.status(403).json({ error: CAPACITY_ERROR });
+        }
+        data.instituteId = inst.id;
+        if (req.user.status === 'ACTIVE') {
+          data.status = 'PENDING'; // تا تأیید مدیر مؤسسه
+        }
+      }
+    }
 
     // فقط مشاور و سوپرادمین می‌توانند نام خود را تغییر دهند
     // دانش‌آموز نمی‌تواند نامش را تغییر دهد (برای جلوگیری از مسخره‌بازی)
@@ -517,7 +619,9 @@ async function updateMyProfile(req, res, next) {
       }
     }
 
-    if (Object.keys(data).length === 0) {
+    // فیلدهای مشاور جدا از data در تراکنش خودش ذخیره می‌شود؛ همین که یکی ارسال شده باشد کافی است
+    const hasFieldUpdate = fields !== undefined && role === 'ADVISOR';
+    if (Object.keys(data).length === 0 && !hasFieldUpdate) {
       return res.status(400).json({ error: 'هیچ فیلدی برای به‌روزرسانی ارسال نشده' });
     }
 
@@ -529,15 +633,40 @@ async function updateMyProfile(req, res, next) {
         fullName: true,
         email: true,
         role: true,
+        status: true,
         phone: true,
         bio: true,
         photoUrl: true,
+        field: true,
+        instituteId: true,
       },
     });
 
+    // رشته‌های تخصص مشاور — اگر در همین درخواست عوض شده از متغیر، وگرنه از دیتابیس
+    let updatedFields;
+    if (hasFieldUpdate) {
+      updatedFields = [...new Set(Array.isArray(fields) ? fields : [])];
+    } else if (role === 'ADVISOR') {
+      const afRows = await prisma.advisorField.findMany({
+        where: { advisorId: req.user.id },
+        select: { field: true },
+      });
+      updatedFields = afRows.map((af) => af.field);
+    }
+
+    // وضعیت تکمیل ثبت‌نام بعد از این به‌روزرسانی
+    const registrationComplete =
+      role === 'PARENT'
+      || (role === 'STUDENT' && !!updated.field)
+      || (role === 'ADVISOR' && Array.isArray(updatedFields) && updatedFields.length > 0);
+
     res.json({
       message: 'پروفایل به‌روزرسانی شد',
-      user: updated,
+      user: {
+        ...updated,
+        fields: updatedFields || undefined,
+        registrationComplete,
+      },
     });
   } catch (err) {
     next(err);

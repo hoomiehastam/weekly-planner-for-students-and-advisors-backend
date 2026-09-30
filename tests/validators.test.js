@@ -63,18 +63,74 @@ test('register: والد بدون ایمیل ولی با رمز ضعیف بای�
   assert.equal(result.success, false);
 });
 
-test('register: دانش‌آموز بدون ایمیل باید رد شود (کنترلر الزام ایمیل را بررسی می‌کند، اسکیما هم اجازه نمی‌دهد خالی بماند)', () => {
-  // نکته: اسکیما email را optional کرده تا والد بدون ایمیل بتواند ثبت‌نام کند؛
-  // الزامی‌بودن ایمیل برای دانش‌آموز/مشاور در کنترلر بررسی می‌شود.
+// --- ثبت‌نام مینیمال: همه‌ی نقش‌ها فقط شماره + رمز می‌دهند؛
+// --- نام/ایمیل/رشته/مؤسسه/مشاور همه اختیاری‌اند و بعد از ورود در پنل تکمیل می‌شوند.
+// --- شماره تماس برای همه‌ی نقش‌ها الزامی است.
+
+test('register: دانش‌آموز با حداقل ورودی (شماره+رمز، بدون نام/ایمیل/رشته) باید پذیرفته شود', () => {
   const result = schemas.register.safeParse({
-    fullName: 'دانش‌آموز تست',
     password: 'Passw0rd123',
     role: 'STUDENT',
     phone: '09123456789',
-    field: 'EXPERIMENTAL',
-    advisorId: CUID,
   });
-  assert.equal(result.success, true); // اسکیما رد نمی‌کند؛ کنترلر رد می‌کند
+  assert.equal(result.success, true);
+});
+
+test('register: دانش‌آموز بدون شماره تماس باید رد شود', () => {
+  const result = schemas.register.safeParse({
+    password: 'Passw0rd123',
+    role: 'STUDENT',
+  });
+  assert.equal(result.success, false);
+});
+
+test('register: مشاور با حداقل ورودی (شماره+رمز) باید پذیرفته شود (تخصص بعداً در پنل)', () => {
+  const result = schemas.register.safeParse({
+    password: 'Passw0rd123',
+    role: 'ADVISOR',
+    phone: '09123456789',
+  });
+  assert.equal(result.success, true);
+});
+
+test('register: والد بدون شماره تماس باید رد شود (شماره برای همه الزامی است)', () => {
+  const result = schemas.register.safeParse({
+    password: 'Passw0rd123',
+    role: 'PARENT',
+    phone: '',
+  });
+  assert.equal(result.success, false);
+});
+
+test('profile: دانش‌آموز می‌تواند بعد از ورود رشته‌اش را تکمیل کند', () => {
+  const result = schemas.profile.safeParse({ field: 'MATH_PHYSICS' });
+  assert.equal(result.success, true);
+  assert.equal(result.data.field, 'MATH_PHYSICS');
+});
+
+test('profile: مشاور می‌تواند آرایه‌ی تخصص (حتی خالی) بفرستد', () => {
+  const ok = schemas.profile.safeParse({ fields: ['HUMANITIES', 'EXPERIMENTAL'] });
+  assert.equal(ok.success, true);
+  const clear = schemas.profile.safeParse({ fields: [] });
+  assert.equal(clear.success, true);
+  const bad = schemas.profile.safeParse({ fields: ['MEDICINE'] });
+  assert.equal(bad.success, false);
+});
+
+test('profile: instituteId باید cuid یا null باشد', () => {
+  assert.equal(schemas.profile.safeParse({ instituteId: null }).success, true);
+  assert.equal(schemas.profile.safeParse({ instituteId: CUID }).success, true);
+  assert.equal(schemas.profile.safeParse({ instituteId: 'not-a-cuid' }).success, false);
+});
+
+test('chooseAdvisor: advisorId به‌صورت cuid باید پذیرفته شود', () => {
+  const result = schemas.chooseAdvisor.safeParse({ advisorId: CUID });
+  assert.equal(result.success, true);
+});
+
+test('chooseAdvisor: advisorId نامعتبر باید رد شود', () => {
+  const result = schemas.chooseAdvisor.safeParse({ advisorId: 'x' });
+  assert.equal(result.success, false);
 });
 
 test('login: شماره تماس به‌عنوان شناسه باید پذیرفته شود', () => {
