@@ -43,6 +43,12 @@ async function getMySubscription(req, res, next) {
 async function setMyCard(req, res, next) {
   try {
     let { cardNumber, shaba, holderName } = req.body;
+    // فقط کسانی که می‌توانند کارت دریافت‌کننده داشته باشند (مشاور، مدیر مؤسسه یا سوپرادمین)
+    const canOwnCard = req.user.role === 'ADVISOR' || req.user.role === 'INSTITUTE_MANAGER' || req.user.role === 'SUPERADMIN';
+    if (!canOwnCard) {
+      return res.status(403).json({ error: 'شما اجازه ثبت شماره کارت ندارید' });
+    }
+
 
     // نرمال‌سازی: حذف فاصله/خط تیره و اعداد فارسی
     const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
@@ -70,6 +76,10 @@ async function setMyCard(req, res, next) {
 // با این اندپوینت کارت فعلی‌اش را می‌بیند و در صورت نیاز ویرایش می‌کند.
 async function getMyCard(req, res, next) {
   try {
+    const canOwnCard = req.user.role === 'ADVISOR' || req.user.role === 'INSTITUTE_MANAGER' || req.user.role === 'SUPERADMIN';
+    if (!canOwnCard) {
+      return res.status(200).json({ card: null });
+    }
     const card = await prisma.cardSettings.findFirst({
       where: { ownerKind: 'USER', ownerId: req.user.id },
     });
