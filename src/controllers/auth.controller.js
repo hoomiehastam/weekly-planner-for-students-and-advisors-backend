@@ -17,17 +17,25 @@ const TRIAL_DAYS = 14;
 const LOCAL_EMAIL_DOMAIN = 'local.daneshamozino.ir';
 
 // آیا مشخصات ضروری نقش کامل است؟ (ثبت‌نام مینیمال: اول فقط شماره+رمز)
-//   والد: همیشه کامل؛ دانش‌آموز: وقتی رشته دارد؛ مشاور: وقتی حداقل یک تخصص دارد.
-// عمداً بدون کوئری اضافه — fields مشاور در login نیاز به کوئری جدا دارد که لازم نیست،
-// چون فرانت بعد از ورود getMe را صدا می‌زند و وضعیت دقیق از آنجا می‌آید.
-function isRegistrationComplete(user) {
+//   والد/سوپرادمین/مدیر مؤسسه: همیشه کامل؛ دانش‌آموز: وقتی رشته دارد؛
+//   مشاور: وقتی حداقل یک تخصص دارد.
+// برای مشاور یک کوئری شمارش می‌زنیم چون فرانت بعد از login دیگر getMe را صدا
+// نمی‌زند و اگر اینجا دقیق نباشد، مودال «تکمیل ثبت‌نام» بعد از ورود مجدد دیده نمی‌شود.
+async function isRegistrationComplete(user) {
   if (user.role === 'PARENT') return true;
   if (user.role === 'SUPERADMIN') return true;
   if (user.role === 'INSTITUTE_MANAGER') return true;
   if (user.role === 'STUDENT') return !!user.field;
-  if (user.role === 'ADVISOR') return true; // دقیقش با getMe — فرانت از آن استفاده می‌کند
+  if (user.role === 'ADVISOR') {
+    const count = await prisma.advisorField.count({ where: { advisorId: user.id } });
+    return count > 0;
+  }
   return true;
 }
+
+// نام‌های موقتی که ثبت‌نام مینیمال خودبخود می‌سازد — دانش‌آموز فقط تا وقتی یکی از
+// این‌ها را دارد می‌تواند نام واقعی‌اش را بگذارد (دقیقاً همان یک‌بارِ «تکمیل ثبت‌نام»)
+const GENERATED_PLACEHOLDER_NAMES = ['دانش‌آموز جدید', 'مشاور جدید', 'والد'];
 
 // ====== تنظیمات ورود خودخدمتی با کد ایمیلی (OTP) ======
 const OTP_LOGIN_LENGTH = 6; // کد عددی ۶ رقمی
@@ -382,7 +390,7 @@ async function login(req, res, next) {
           field: user.field,
           photoUrl: user.photoUrl,
           mustChangePassword: user.mustChangePassword === true,
-          registrationComplete: isRegistrationComplete(user),
+          registrationComplete: await isRegistrationComplete(user),
         },
       });
       }
@@ -439,7 +447,7 @@ async function login(req, res, next) {
         field: user.field,
         photoUrl: user.photoUrl,
         mustChangePassword: false,
-        registrationComplete: isRegistrationComplete(user),
+        registrationComplete: await isRegistrationComplete(user),
       },
     });
   } catch (err) {
@@ -592,20 +600,26 @@ async function updateMyProfile(req, res, next) {
       }
     }
 
-    // فقط مشاور و سوپرادمین می‌توانند نام خود را تغییر دهند
-    // دانش‌آموز نمی‌تواند نامش را تغییر دهد (برای جلوگیری از مسخره‌بازی)
+    // نام: مشاور/سوپرادمین هر وقت بخواهند عوض می‌کنند.
+    // دانش‌آموز فقط وقتی می‌تواند نام بگذارد که هنوز نام موقتِ ثبت‌نام مینیمال
+    // («دانش‌آموز جدید») را دارد — یعنی دقیقاً همان یک‌بارِ «تکمیل ثبت‌نام»؛
+    // بعد از آن تغییر نام مسدود می‌ماند (برای جلوگیری از مسخره‌بازی).
     if (fullName !== undefined) {
-      if (role === 'STUDENT') {
-        return res.status(403).json({
-          error: 'دانش‌آموز نمی‌تواند نام خود را تغییر دهد. در صورت نیاز، با مشاور یا سوپرادمین تماس بگیرید.',
-        });
-      }
       const trimmedName = String(fullName).trim();
       if (trimmedName.length < 2) {
         return res.status(400).json({ error: 'نام باید حداقل ۲ کاراکتر باشد' });
       }
       if (trimmedName.length > 100) {
         return res.status(400).json({ error: 'نام نباید بیشتر از ۱۰۰ کاراکتر باشد' });
+      }
+      if (role === 'STUDENT') {
+        const currentName = String(req.user.fullName || '').trim();
+        const isFreshPlaceholder = !currentName || GENERATED_PLACEHOLDER_NAMES.includes(currentName);
+        if (!isFreshPlaceholder) {
+          return res.status(403).json({
+            error: 'دانش‌آموز نمی‌تواند نام خود را تغییر دهد. در صورت نیاز، با مشاور یا سوپرادمین تماس بگیرید.',
+          });
+        }
       }
       data.fullName = trimmedName;
     }
