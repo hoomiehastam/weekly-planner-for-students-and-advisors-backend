@@ -1,0 +1,32 @@
+-- Drop unique constraint on dayId if it exists to allow multiple plan items per day
+SET @sql = (SELECT IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS 
+   WHERE TABLE_SCHEMA = DATABASE() 
+   AND TABLE_NAME = 'PlanItem' 
+   AND INDEX_NAME = 'PlanItem_dayId_key') > 0,
+  'ALTER TABLE `PlanItem` DROP INDEX `PlanItem_dayId_key`;',
+  'SELECT 1;'
+));
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql2 = (SELECT IF(
+  (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS 
+   WHERE TABLE_SCHEMA = DATABASE() 
+   AND TABLE_NAME = 'PlanItem' 
+   AND NON_UNIQUE = 0 
+   AND COLUMN_NAME = 'dayId' 
+   AND INDEX_NAME != 'PRIMARY') > 0,
+  (SELECT CONCAT('ALTER TABLE `PlanItem` DROP INDEX `', INDEX_NAME, '`;')
+   FROM INFORMATION_SCHEMA.STATISTICS 
+   WHERE TABLE_SCHEMA = DATABASE() 
+   AND TABLE_NAME = 'PlanItem' 
+   AND NON_UNIQUE = 0 
+   AND COLUMN_NAME = 'dayId' 
+   AND INDEX_NAME != 'PRIMARY' LIMIT 1),
+  'SELECT 1;'
+));
+PREPARE stmt2 FROM @sql2;
+EXECUTE stmt2;
+DEALLOCATE PREPARE stmt2;

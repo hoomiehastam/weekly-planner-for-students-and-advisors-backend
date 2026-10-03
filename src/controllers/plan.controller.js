@@ -93,7 +93,7 @@ function toItemInput(it, idx) {
 }
 
 // ساخت داده‌ی Prisma برای آیتم جدید (روز موجود یا روز تازه)
-function itemCreateData(it) {
+function itemCreateData(it, dayId) {
   const data = {
     subject: it.subject,
     description: it.description,
@@ -101,6 +101,9 @@ function itemCreateData(it) {
     endTime: it.endTime,
     order: it.order,
   };
+  if (dayId) {
+    data.dayId = dayId;
+  }
   if (it.tags.length > 0) {
     data.tags = { create: it.tags.map((tagId) => ({ tagId })) };
   }
@@ -187,9 +190,9 @@ async function replaceDays(tx, { planId, advisorId, days }) {
       }
     }
 
-    // ساخت آیتم‌های جدید
+    // ساخت آیتم‌های جدید — آیتم را به روز فعلی متصل می‌کنیم تا.dayId برقرار بماند
     for (const it of toCreate) {
-      await tx.planItem.create({ data: itemCreateData(it) });
+      await tx.planItem.create({ data: itemCreateData(it, existingDay.id) });
     }
 
     // حذف آیتم‌های روز که دیگر در درخواست نیستند
