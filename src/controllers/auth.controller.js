@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const prisma = require('../config/prisma');
-const { toLatinDigits } = require('./../utils/faDigits');
+const { toLatinDigits, toFaDigits } = require('./../utils/faDigits');
 const { generateToken, setTokenCookie, clearTokenCookie } = require('../utils/jwt');
 const { normalizePhone, normalizeBio, validatePassword } = require('../utils/normalizers');
 const { sendPasswordResetEmail, sendOtpEmail } = require('../utils/mailer');
@@ -314,6 +314,61 @@ async function register(req, res, next) {
   }
 }
 
+// همه‌ی شکل‌هایی که یک شماره ممکن است در دیتابیس ذخیره شده باشد.
+// ثبت‌نام‌های جدید همیشه به شکل ۰۹۱۲۳۴۵۶۷۸۹ ذخیره می‌شوند، ولی داده‌های قدیمی‌تر
+// ممکن است بدون صفر اول، با +۹۸، یا با ارقام فارسی ذخیره شده باشند.
+function phoneVariants(normalized) {
+  const national = normalized.slice(1); // بدون صفر اول (۱۰ رقم)
+  const base = [normalized, national, `+98${national}`, `98${national}`, `0098${national}`];
+  const fa = [toFaDigits(normalized), toFaDigits(national)];
+  return [...new Set([...base, ...fa])];
+}
+
+// پیدا کردن کاربرانِ کاندیدا برای ورود. چون ستون شماره تماس یکتا نیست (مثلاً والد و فرزند
+// ممکن است یک شماره بدهند)، ممکن است چند کاربر برگردد؛ انتخاب نهایی با تطابق رمز است.
+async function findLoginCandidates(identifier) {
+  // ایمیل
+  if (identifier.includes('@')) {
+    const u = await prisma.user.findUnique({ where: { email: identifier } });
+    return u ? [u] : [];
+  }
+
+  // شماره تماس
+  const looksLikePhone = /^[+\d][\d\s()-]{9,}$/.test(toLatinDigits(identifier));
+  if (looksLikePhone) {
+    let phoneValue = null;
+    try {
+      phoneValue = normalizePhone(identifier);
+    } catch {
+      phoneValue = null; // شکل شماره دارد ولی فرمتش درست نیست
+    }
+    if (phoneValue) {
+      return prisma.user.findMany({
+        where: { phone: { in: phoneVariants(phoneValue) } },
+        orderBy: { createdAt: 'asc' },
+      });
+    }
+    return [];
+  }
+
+  // هیچ‌کدام — برای سازگاری با گذشته به‌عنوان ایمیل جستجو می‌شود
+  const u = await prisma.user.findUnique({ where: { email: identifier } });
+  return u ? [u] : [];
+}
+
+// از میان کاندیداها، کاربری را برمی‌گرداند که رمز (یا رمز یک‌بارمصرف) واردشده مال اوست.
+// اگر هیچ‌کدام تطابق نداشت، اولین کاندیدا برمی‌گردد تا همان پیام خطای عادی نشان داده شود.
+async function pickUserByCredentials(candidates, password) {
+  if (candidates.length <= 1) return candidates[0] || null;
+  for (const c of candidates) {
+    if (c.otpHash && c.otpExpiresAt && c.otpExpiresAt > new Date()) {
+      if (await bcrypt.compare(password, c.otpHash)) return c;
+    }
+    if (c.mustChangePassword !== true && (await bcrypt.compare(password, c.passwordHash))) return c;
+  }
+  return candidates[0];
+}
+
 // ورود کاربر با رمز عبور — شناسه می‌تواند «ایمیل» یا «شماره تماس» باشد (یا رمز یک‌بار مصرف OTP)
 // ورود با شماره مخصوصاً برای والدین است که در ثبت‌نام یک‌مرحله‌ای فقط شماره می‌دهند و ایمیلشان خودبخود ساخته می‌شود.
 async function login(req, res, next) {
@@ -325,27 +380,9 @@ async function login(req, res, next) {
       return res.status(400).json({ error: 'ایمیل/شماره تماس و رمز عبور الزامی هستند' });
     }
 
-    // اگر ورودی شکل شماره تماس دارد (ارقام/+/فاصله، بدون @) به‌عنوان شماره جستجو می‌کنیم؛
-    // normalizePhone همان منطق ثبت‌نام را اعمال می‌کند (۰۹۱۲…، ۹۱۲…، +۹۸۹۱۲… و …)
-    let user = null;
-    const looksLikePhone = !identifier.includes('@') && /^[+\d][\d\s()-]{9,}$/.test(toLatinDigits(identifier));
-    if (looksLikePhone) {
-      let phoneValue = null;
-      try {
-        phoneValue = normalizePhone(identifier);
-      } catch {
-        phoneValue = null; // شکل شماره دارد ولی فرمتش درست نیست — همان پیام خطای عمومی برمی‌گردد
-      }
-      if (phoneValue) {
-        user = await prisma.user.findFirst({ where: { phone: phoneValue } });
-      }
-    }
-    if (!user && identifier.includes('@')) {
-      user = await prisma.user.findUnique({ where: { email: identifier } });
-    }
-    if (!user && !looksLikePhone) {
-      user = await prisma.user.findUnique({ where: { email: identifier } });
-    }
+    // کاربر را با ایمیل یا شماره تماس پیدا می‌کنیم (جزئیات در findLoginCandidates)
+    const candidates = await findLoginCandidates(identifier);
+    const user = await pickUserByCredentials(candidates, String(password));
     if (!user) {
       return res.status(401).json({ error: 'ایمیل/شماره تماس یا رمز عبور اشتباه است' });
     }
@@ -416,7 +453,7 @@ async function login(req, res, next) {
 
     const passwordMatches = await bcrypt.compare(password, user.passwordHash);
     if (!passwordMatches) {
-      return res.status(401).json({ error: 'ایمیل یا رمز عبور اشتباه است' });
+      return res.status(401).json({ error: 'ایمیل/شماره تماس یا رمز عبور اشتباه است' });
     }
 
     if (user.status === 'PENDING') {
