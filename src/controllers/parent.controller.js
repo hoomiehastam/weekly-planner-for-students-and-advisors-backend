@@ -185,6 +185,19 @@ async function getChildSummary(req, res, next) {
       select: { status: true, endsAt: true },
     });
 
+    // نمرات آزمون‌های آزمایشی — برای نمودار روند پیشرفت در پنل والد
+    const mockScores = await prisma.mockExamScore.findMany({
+      where: { studentId },
+      orderBy: { takenAt: 'asc' },
+      select: {
+        id: true,
+        title: true,
+        takenAt: true,
+        rank: true,
+        percentages: true,
+      },
+    });
+
     res.json({
       student: { id: studentId, fullName: (await prisma.user.findUnique({ where: { id: studentId }, select: { fullName: true } }))?.fullName },
       advisor: advisorLink?.advisor ? { fullName: advisorLink.advisor.fullName } : null,
@@ -205,6 +218,11 @@ async function getChildSummary(req, res, next) {
           : null,
       })),
       subscription,
+      // نمرات آزمون آزمایشی (درصدها و تراز) — برای نمودار پیشرفت
+      mockExamScores: mockScores.map((s) => ({
+        ...s,
+        percentages: s.percentages ? JSON.parse(s.percentages) : null,
+      })),
     });
   } catch (err) {
     next(err);

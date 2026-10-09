@@ -9,6 +9,10 @@ const {
   getMyAdvisor,
   chooseMyAdvisor,
 } = require('../controllers/student.controller');
+const {
+  listMockExamScores,
+  createMockExamScore,
+} = require('../controllers/mockExam.controller');
 
 // مشاور: فهرست دانش‌آموزهای خودش (شامل شماره تماس و توضیحات)
 router.get('/mine', authenticate, requireRole('ADVISOR', 'SUPERADMIN'), listMyStudents);
@@ -30,5 +34,13 @@ router.put(
   validate(schemas.weeklyGoal),
   setStudentWeeklyGoal
 );
+
+// ====== نمرات آزمون‌های آزمایشی (MOCK) ======
+// دیدن نمرات: خود دانش‌آموز / مشاور متصل / والد متصل
+//аче در کنترلر: getAccess)
+router.get('/:studentId/mock-exams', authenticate, listMockExamScores);
+
+// ثبت نمره‌ی جدید: فقط خود دانش‌آموز
+router.post('/:studentId/mock-exams', authenticate, requireRole('STUDENT'), createMockExamScore);
 
 module.exports = router;

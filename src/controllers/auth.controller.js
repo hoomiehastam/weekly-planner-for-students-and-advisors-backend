@@ -137,6 +137,10 @@ async function register(req, res, next) {
         : 'این ایمیل قبلاً ثبت شده است' });
     }
 
+    // --- مانع ثبت‌نام مجدد با شماره‌ی ثبت‌شده ---
+    // فرمت‌های قدیمی شماره (بدون صفر اول، ۰۹۸ و ...) هم باید شبیه هم تشخیص داده شوند.
+    // اگر همین شماره قبلاً برای یک حساب استفاده شده، ثبت‌نام جدید نمی‌پذیریم;
+    // کاربر باید با همان شماره از صفحه‌ی ورود وارد شود.
     let phoneValue = null;
     let bioValue = null;
     let passwordValue;
@@ -147,6 +151,25 @@ async function register(req, res, next) {
       passwordValue = validatePassword(password);
     } catch (err) {
       return res.status(400).json({ error: err.message });
+    }
+
+    const phoneOwner = await prisma.user.findFirst({
+      where: { phone: { in: phoneVariants(phoneValue) } },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, role: true, status: true },
+    });
+    if (phoneOwner) {
+      const roleMessage = {
+        STUDENT: 'با این شماره تماس قبلاً حساب دانش‌آموز ساخته شده است',
+        ADVISOR: 'با این شماره تماس قبلاً حساب مشاور ساخته شده است',
+        PARENT: 'با این شماره تماس قبلاً حساب والد ساخته شده است',
+        SUPERADMIN: 'با این شماره تماس قبلاً حساب ساخته شده است',
+        INSTITUTE_MANAGER: 'با این شماره تماس قبلاً حساب مدیر مؤسسه ساخته شده است',
+      };
+      return res.status(409).json({
+        error: `${roleMessage[phoneOwner.role] || 'با این شماره تماس قبلاً حساب ساخته شده است'}. از صفحه‌ی ورود وارد شو (یا رمزت را بازیابی کن).`,
+        code: 'PHONE_ALREADY_REGISTERED',
+      });
     }
 
     // عضویت اختیاری در مؤسسه
@@ -384,6 +407,17 @@ async function login(req, res, next) {
     const candidates = await findLoginCandidates(identifier);
     const user = await pickUserByCredentials(candidates, String(password));
     if (!user) {
+      // پیام دقیق‌تر: اگر شناسه شکل شماره تماس داشت و اصلاً حسابی با آن ثبت نشده،
+      // به کاربر می‌گوییم که این شماره در سیستم نیست (حالا اگر رمز را اشتباه زده بود،
+      // همان پیام عمومی قبلی را نمی‌بینیم). برای ایمیل به‌دلایل امنیتی پیام عمومی می‌ماند.
+      const isPhoneIdentifier
+        = /^[+\d][\d\s()-]{9,}$/.test(toLatinDigits(identifier)) && !identifier.includes('@');
+      if (isPhoneIdentifier && candidates.length === 0) {
+        return res.status(401).json({
+          error: 'هیچ حسابی با این شماره تماس در سیستم ثبت نشده است. اول ثبت‌نام کن یا شماره‌ی دیگری را امتحان کن.',
+          code: 'PHONE_NOT_REGISTERED',
+        });
+      }
       return res.status(401).json({ error: 'ایمیل/شماره تماس یا رمز عبور اشتباه است' });
     }
 

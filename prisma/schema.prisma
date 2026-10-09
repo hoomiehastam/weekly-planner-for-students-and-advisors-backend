@@ -316,6 +316,8 @@ model User {
   examsAssigned   Exam[]           @relation("ExamStudent")
   // ارسال‌های آزمون دانش‌آموز
   examSubmissions ExamSubmission[] @relation("ExamSubmissionStudent")
+  // نمرات آزمون‌های آزمایشی که خودش ثبت کرده
+  mockExamScores  MockExamScore[]  @relation("MockExamStudent")
 
   // توکن‌های بازنشانی رمز عبور (فراموشی رمز)
   passwordResets PasswordReset[]
@@ -702,4 +704,31 @@ model ExamAnswer {
   @@unique([submissionId, questionId])
   @@index([submissionId])
   @@index([questionId])
+}
+
+// ====== نمرات آزمون‌های آزمایشی (MOCK) دانش‌آموز ======
+// دانش‌آموز نتیجه‌ی هر آزمون آزمایشی که بیرون از پلتفرم داده را خودش ثبت می‌کند:
+//   - درصد هر درس (اختیاری؛ برای تحلیل رشته‌ای)
+//   - تراز کل آزمون (۱۲۰۰ تا ۳۶۵۰ در کنکور سراسری ۱۴۰۳+)
+// از این داده‌ها نمودار خطی روند پیشرفت/پسرفت ساخته می‌شود که در هر سه پنل
+// (خود دانش‌آموز / مشاور متصل / والد متصل) نمایش داده می‌شود.
+model MockExamScore {
+  id         String   @id @default(cuid())
+  studentId  String   @db.VarChar(100)
+  // عنوان آزمون (مثلاً «آزمون ملی آزمایشی ۳ خرداد») — الزامی
+  title      String   @db.VarChar(190)
+  // تاریخ برگزاری — نمودار بر همین اساس مرتب می‌شود
+  takenAt    DateTime
+  // تراز کل (۱۲۰۰ تا ۳۶۵۰) — اختیاری؛ اگر نداند خالی می‌گذارد
+  rank       Int?
+  // درصد هر درس — کلید: HUMANITIES/MATH_PHYSICS/EXPERIMENTAL générale
+  // درصدها بین ۰ تا ۱۰۰ و فارسی/انگلیسی هر دو قبول است
+  // برای امروز این سه کلید استاندارد داریم؛ خود هر آیتم به‌صورت JSON ساده ذخیره می‌شود
+  percentages String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  student User @relation("MockExamStudent", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId, takenAt])
 }
