@@ -58,10 +58,15 @@ async function authenticate(req, res, next) {
     req.user = user;
 
     // --- قطع خودکار دسترسی بعد از انقضای اشتراک ---
-    if (!isSubscriptionExempt(req.method, req.originalUrl || req.url) && !hasEffectiveAccess(user, {
+    // نتیجه روی req هم می‌ماند تا /api/auth/me بتواند آن را به فرانت بدهد
+    // (قبلاً هیچ‌جا مقداردهی نمی‌شد و همیشه «دسترسی دارد» برمی‌گشت)
+    const hasAccess = hasEffectiveAccess(user, {
       userSub: user.subscription,
       instituteSub: user.institute?.subscription || null,
-    })) {
+    });
+    req.hasAccess = hasAccess;
+
+    if (!isSubscriptionExempt(req.method, req.originalUrl || req.url) && !hasAccess) {
       return res.status(403).json({
         error: 'اشتراک شما به پایان رسیده است. برای تمدید، به صفحه‌ی واریز بروید.',
         code: 'SUBSCRIPTION_EXPIRED',
