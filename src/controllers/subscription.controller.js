@@ -306,15 +306,6 @@ async function createDeposit(req, res, next) {
   try {
     const { targetKind, targetId, receiptImageUrl, amount, note } = req.body;
 
-    // سقف رسیدهای در انتظار تأیید به‌ازای هر پرداخت‌کننده — جلوگیری از اسپم
-    // رسید (هر رسید تا ۷۰۰KB عکس base64 است و مستقیم داخل دیتابیس می‌رود)
-    const pendingCount = await prisma.depositRequest.count({
-      where: { payerId: req.user.id, status: 'PENDING' },
-    });
-    if (pendingCount >= 5) {
-      return res.status(429).json({ error: 'شما ۵ رسید در انتظار تأیید دارید؛ تا بررسی آن‌ها صبر کنید' });
-    }
-
     // اعتبارسنجی مقصد و تعیین صاحب کارت (تأییدکننده)
     let ownerId;
     let targetTitle;
@@ -348,12 +339,18 @@ async function createDeposit(req, res, next) {
           if (req.user.instituteId) {
             // دانش‌آموزِ مؤسسه‌ای → کارت مؤسسه را دیده و به آن واریز کرده؛
             // تأیید با نماینده‌ی مؤسسه است (نه مشاور)
-            const manager = await resolveInstituteManager(req.user.instituteId);
+            const inst = await prisma.institute.findUnique({ where: { id: req.user.instituteId } });
+            const manager = inst?.leaderId
+              ? await prisma.user.findUnique({ where: { id: inst.leaderId } })
+              : await prisma.user.findFirst({ where: { role: 'INSTITUTE_MANAGER', instituteId: inst.id } });
             if (!manager) return res.status(400).json({ error: 'نماینده‌ای برای تأیید واریز مؤسسه‌ی شما تعیین نشده است' });
             ownerId = manager.id;
           } else if (myAdvisor?.instituteId) {
             // مشاورِ من آموزشگاهی است → کارت مؤسسه‌ی او را دیده‌ام؛ تأیید با نماینده‌ی آن مؤسسه
-            const manager = await resolveInstituteManager(myAdvisor.instituteId);
+            const inst = await prisma.institute.findUnique({ where: { id: myAdvisor.instituteId } });
+            const manager = inst?.leaderId
+              ? await prisma.user.findUnique({ where: { id: inst.leaderId } })
+              : await prisma.user.findFirst({ where: { role: 'INSTITUTE_MANAGER', instituteId: inst.id } });
             if (!manager) return res.status(400).json({ error: 'نماینده‌ای برای تأیید واریز مؤسسه تعیین نشده است' });
             ownerId = manager.id;
           } else {
@@ -367,12 +364,9 @@ async function createDeposit(req, res, next) {
           ownerId = superadmin.id;
         }
       } else if (targetUser.instituteId) {
-        // تمدید اشتراک یکی از اعضای مؤسسه — تأییدکننده همیشه مدیر/نماینده‌ی
-        // مؤسسه‌ی مقصد است، هرگز خودِ کاربر مقصد؛ وگرنه هر عضوی می‌توانست
-        // برای خودش رسید بسازد و خودش تأیید کند (= تمدید رایگان اشتراک).
-        const manager = await resolveInstituteManager(targetUser.instituteId);
-        if (!manager) return res.status(400).json({ error: 'مدیری برای تأیید واریز این عضو تعیین نشده است' });
-        ownerId = manager.id;
+        // تمدید اشتراک یکی از اعضای مؤسسه‌ی من (مدیر/سردار خودش تعیین می‌کند) —
+        // ولی اجازه فقط وقتی که خودم همان مدیر باشم، در approveDeposit هم دوباره چک می‌شود
+        ownerId = targetUser.id;
       } else if (
         req.user.role === 'PARENT'
         && targetUser.role === 'STUDENT'
@@ -391,7 +385,11 @@ async function createDeposit(req, res, next) {
           select: { instituteId: true },
         });
         if (targetUser.instituteId || childAdvisor?.instituteId) {
-          const manager = await resolveInstituteManager(targetUser.instituteId || childAdvisor.instituteId);
+          const instId = targetUser.instituteId || childAdvisor.instituteId;
+          const inst = await prisma.institute.findUnique({ where: { id: instId } });
+          const manager = inst?.leaderId
+            ? await prisma.user.findUnique({ where: { id: inst.leaderId } })
+            : await prisma.user.findFirst({ where: { role: 'INSTITUTE_MANAGER', instituteId: instId } });
           if (!manager) return res.status(400).json({ error: 'نماینده‌ای برای تأیید واریز تعیین نشده است' });
           ownerId = manager.id;
         } else {
@@ -469,96 +467,64 @@ async function approveDeposit(req, res, next) {
     const { id } = req.params;
     const { days, decisionNote, amount } = req.body;
 
-    // تصاحب اتمیک رسید و تمدید اشتراک داخل یک تراکنش — دو تأیید هم‌زمان دیگر
-    // نمی‌توانند هر دو از چک PENDING رد شوند و اشتراک را دوبار تمدید کنند:
-    //   ۱) کل عملیات داخل $transaction است؛ اگر تصاحب شکست بخورد، تمدید هم رول‌بک می‌شود.
-    //   ۲) تصاحب با updateMany شرطی ({ id, status: 'PENDING' }) انجام می‌شود؛
-    //      دومی که می‌رسد روی قفل سطر صبر می‌کند و بعد از commit دومی count=0 می‌گیرد.
-    const result = await prisma.$transaction(async (tx) => {
-      const deposit = await tx.depositRequest.findUnique({ where: { id } });
-      if (!deposit) return { status: 404, error: 'رسید یافت نشد' };
-      if (deposit.ownerId !== req.user.id) return { status: 403, error: 'فقط گیرنده‌ی پرداخت می‌تواند این رسید را تأیید کند' };
-      // گارد خود-تأییدی: پرداخت‌کننده و تأییدکننده یک نفر نباشند (تمدید رایگان)
-      if (deposit.payerId === deposit.ownerId) return { status: 403, error: 'تأیید رسیدِ خودتان مجاز نیست' };
-      if (deposit.status !== 'PENDING') return { status: 400, error: 'این رسید قبلاً بررسی شده است' };
+    const deposit = await prisma.depositRequest.findUnique({ where: { id } });
+    if (!deposit) return res.status(404).json({ error: 'رسید یافت نشد' });
+    if (deposit.ownerId !== req.user.id) return res.status(403).json({ error: 'فقط گیرنده‌ی پرداخت می‌تواند این رسید را تأیید کند' });
+    if (deposit.status !== 'PENDING') return res.status(400).json({ error: 'این رسید قبلاً بررسی شده است' });
 
-      // اصلاح مبلغ واریزی توسط تأییدکننده (اگر پرداخت‌کننده اشتباه وارد کرده باشد)
-      let effectiveAmount = deposit.amount != null ? Number(deposit.amount) : null;
-      if (amount !== undefined && amount !== null && amount !== '') {
-        const corrected = Number(amount);
-        if (!Number.isInteger(corrected) || corrected < 0) {
-          return { status: 400, error: 'مبلغ اصلاح‌شده باید عدد صحیح غیرمنفی باشد' };
-        }
-        effectiveAmount = corrected;
+    // اصلاح مبلغ واریزی توسط تأییدکننده (اگر پرداخت‌کننده اشتباه وارد کرده باشد)
+    let effectiveAmount = deposit.amount != null ? Number(deposit.amount) : null;
+    if (amount !== undefined && amount !== null && amount !== '') {
+      const corrected = Number(amount);
+      if (!Number.isInteger(corrected) || corrected < 0) {
+        return res.status(400).json({ error: 'مبلغ اصلاح‌شده باید عدد صحیح غیرمنفی باشد' });
       }
+      effectiveAmount = corrected;
+    }
 
-      // قیمت ماهانه برای محاسبه‌ی خودکار روزها (تومان)
-      const monthlyPrice = await resolveMonthlyPriceForDeposit(deposit, tx);
+    // قیمت ماهانه برای محاسبه‌ی خودکار روزها (تومان)
+    const monthlyPrice = await resolveMonthlyPriceForDeposit(deposit);
 
-      // محاسبه‌ی روزها: اولویت با محاسبه‌ی خودکار از مبلغ؛ در نبودِ مبلغ یا قیمت، days دستی
-      let finalDays;
-      let autoCalculated = false;
-      if (effectiveAmount != null && monthlyPrice != null && monthlyPrice > 0) {
-        finalDays = Math.round((effectiveAmount / monthlyPrice) * 30);
-        autoCalculated = true;
-        if (finalDays < 1) {
-          return {
-            status: 400,
-            error: `مبلغ ${effectiveAmount.toLocaleString('fa-IR')} تومان برای قیمت ماهانه‌ی ${monthlyPrice.toLocaleString('fa-IR')} تومانی کمتر از یک روز است؛ مبلغ را اصلاح کنید یا مدت را دستی وارد کنید`,
-          };
-        }
-      } else if (days) {
-        const d = Number(days);
-        if (!Number.isInteger(d) || d < 1 || d > 3650) {
-          return { status: 400, error: 'مدت تمدید باید عدد صحیح بین ۱ تا ۳۶۵۰ باشد' };
-        }
-        finalDays = d;
-      } else {
-        return { status: 400, error: 'برای تأیید، مبلغ واریزی یا مدت تمدید (روز) لازم است' };
+    // محاسبه‌ی روزها: اولویت با محاسبه‌ی خودکار از مبلغ؛ در نبودِ مبلغ یا قیمت، days دستی
+    let finalDays;
+    let autoCalculated = false;
+    if (effectiveAmount != null && monthlyPrice != null && monthlyPrice > 0) {
+      finalDays = Math.round((effectiveAmount / monthlyPrice) * 30);
+      autoCalculated = true;
+      if (finalDays < 1) {
+        return res.status(400).json({
+          error: `مبلغ ${effectiveAmount.toLocaleString('fa-IR')} تومان برای قیمت ماهانه‌ی ${monthlyPrice.toLocaleString('fa-IR')} تومانی کمتر از یک روز است؛ مبلغ را اصلاح کنید یا مدت را دستی وارد کنید`,
+        });
       }
-      finalDays = Math.min(finalDays, 3650);
-
-      const newEndsAt = await extendSubscription(deposit.targetKind, deposit.targetId, finalDays, `DEPOSIT:${deposit.id}`, tx);
-
-      // تصاحب اتمیک: فقط اگر هنوز PENDING است — مبلغ اصلاح‌شده هم همین‌جا ثبت می‌شود
-      const claimed = await tx.depositRequest.updateMany({
-        where: { id, status: 'PENDING' },
-        data: {
-          status: 'APPROVED',
-          approvedDays: finalDays,
-          decidedAt: new Date(),
-          newEndsAt,
-          decisionNote: decisionNote || null,
-          ...(effectiveAmount != null ? { amount: BigInt(effectiveAmount) } : {}),
-        },
-      });
-      if (claimed.count === 0) {
-        return { status: 400, error: 'این رسید قبلاً بررسی شده است' };
+    } else if (days) {
+      const d = Number(days);
+      if (!Number.isInteger(d) || d < 1 || d > 3650) {
+        return res.status(400).json({ error: 'مدت تمدید باید عدد صحیح بین ۱ تا ۳۶۵۰ باشد' });
       }
+      finalDays = d;
+    } else {
+      return res.status(400).json({ error: 'برای تأیید، مبلغ واریزی یا مدت تمدید (روز) لازم است' });
+    }
+    finalDays = Math.min(finalDays, 3650);
 
-      return {
-        status: 200,
-        payload: {
-          message: `رسید تأیید شد؛ اشتراک ${finalDays} روز تمدید شد${autoCalculated ? ' (محاسبه‌ی خودکار بر اساس مبلغ)' : ''}`,
-          deposit: serializeDeposit({
-            ...deposit,
-            status: 'APPROVED',
-            approvedDays: finalDays,
-            decidedAt: new Date(),
-            newEndsAt,
-            decisionNote: decisionNote || null,
-            amount: effectiveAmount != null ? BigInt(effectiveAmount) : deposit.amount,
-          }),
-          newEndsAt,
-          days: finalDays,
-        },
-      };
+    // ثبت مبلغ اصلاح‌شده روی رسید (برای شفافیت تاریخچه)
+    if (effectiveAmount != null && (deposit.amount == null || Number(deposit.amount) !== effectiveAmount)) {
+      await prisma.depositRequest.update({ where: { id }, data: { amount: BigInt(effectiveAmount) } });
+    }
+
+    const newEndsAt = await extendSubscription(deposit.targetKind, deposit.targetId, finalDays, `DEPOSIT:${deposit.id}`);
+
+    const updated = await prisma.depositRequest.update({
+      where: { id },
+      data: { status: 'APPROVED', approvedDays: finalDays, decidedAt: new Date(), newEndsAt, decisionNote: decisionNote || null },
     });
 
-    if (result.status !== 200) {
-      return res.status(result.status).json({ error: result.error });
-    }
-    res.json(result.payload);
+    res.json({
+      message: `رسید تأیید شد؛ اشتراک ${finalDays} روز تمدید شد${autoCalculated ? ' (محاسبه‌ی خودکار بر اساس مبلغ)' : ''}`,
+      deposit: serializeDeposit(updated),
+      newEndsAt,
+      days: finalDays,
+    });
   } catch (err) {
     next(err);
   }
@@ -570,20 +536,16 @@ async function rejectDeposit(req, res, next) {
     const { id } = req.params;
     const { decisionNote } = req.body;
 
-    // رد اتمیک: updateMany شرطی تضمین می‌کند هر رسید فقط یک‌بار تصمیم بگیرد
-    const rejected = await prisma.depositRequest.updateMany({
-      where: { id, ownerId: req.user.id, status: 'PENDING' },
+    const deposit = await prisma.depositRequest.findUnique({ where: { id } });
+    if (!deposit) return res.status(404).json({ error: 'رسید یافت نشد' });
+    if (deposit.ownerId !== req.user.id) return res.status(403).json({ error: 'فقط گیرنده‌ی پرداخت می‌تواند این رسید را رد کند' });
+    if (deposit.status !== 'PENDING') return res.status(400).json({ error: 'این رسید قبلاً بررسی شده است' });
+
+    const updated = await prisma.depositRequest.update({
+      where: { id },
       data: { status: 'REJECTED', decidedAt: new Date(), decisionNote: decisionNote || null },
     });
-    if (rejected.count === 0) {
-      // یا وجود ندارد، یا مالِ کاربر نیست، یا قبلاً بررسی شده — بدون افشای جزئیات
-      const deposit = await prisma.depositRequest.findUnique({ where: { id }, select: { ownerId: true } });
-      if (!deposit) return res.status(404).json({ error: 'رسید یافت نشد' });
-      if (deposit.ownerId !== req.user.id) return res.status(403).json({ error: 'فقط گیرنده‌ی پرداخت می‌تواند این رسید را رد کند' });
-      return res.status(400).json({ error: 'این رسید قبلاً بررسی شده است' });
-    }
 
-    const updated = await prisma.depositRequest.findUnique({ where: { id } });
     res.json({ message: 'رسید رد شد', deposit: serializeDeposit(updated) });
   } catch (err) {
     next(err);
@@ -592,33 +554,21 @@ async function rejectDeposit(req, res, next) {
 
 // ====== توابع کمکی ======
 
-// مدیر/نماینده‌ی مؤسسه: اگر سرداری تعیین شده او، وگرنه نخستین مدیر رسمی فعال
-// (الگوی تکرارشونده‌ی تعیین تأییدکننده‌ی واریزهای مؤسسه — یک‌جا متمرکز شد)
-async function resolveInstituteManager(instituteId) {
-  const inst = await prisma.institute.findUnique({ where: { id: instituteId } });
-  if (!inst) return null;
-  const manager = inst.leaderId
-    ? await prisma.user.findUnique({ where: { id: inst.leaderId } })
-    : await prisma.user.findFirst({ where: { role: 'INSTITUTE_MANAGER', instituteId: inst.id } });
-  return manager || null;
-}
-
 // قیمت ماهانه‌ی مرتبط با یک رسید (تومان) برای محاسبه‌ی خودکار روزهای تمدید.
 // اولویت: قیمت روی کارت صاحب → قیمت مؤسسه (مقصد مؤسسه‌ای یا مؤسسه‌ی صاحب) → قیمت کاربر مقصد.
-// client = تراکنش جاری (tx) یا prisma معمول — تا داخل $transaction هم درست کار کند
-async function resolveMonthlyPriceForDeposit(deposit, client = prisma) {
+async function resolveMonthlyPriceForDeposit(deposit) {
   try {
-    const ownerCard = await client.cardSettings.findFirst({ where: { ownerKind: 'USER', ownerId: deposit.ownerId } });
+    const ownerCard = await prisma.cardSettings.findFirst({ where: { ownerKind: 'USER', ownerId: deposit.ownerId } });
     if (ownerCard?.monthlyPrice != null) return ownerCard.monthlyPrice;
 
     if (deposit.targetKind === 'INSTITUTE') {
-      const inst = await client.institute.findUnique({ where: { id: deposit.targetId }, select: { monthlyPrice: true } });
+      const inst = await prisma.institute.findUnique({ where: { id: deposit.targetId }, select: { monthlyPrice: true } });
       if (inst?.monthlyPrice != null) return inst.monthlyPrice;
     } else {
-      const targetUser = await client.user.findUnique({ where: { id: deposit.targetId }, select: { monthlyPrice: true, instituteId: true } });
+      const targetUser = await prisma.user.findUnique({ where: { id: deposit.targetId }, select: { monthlyPrice: true, instituteId: true } });
       if (targetUser?.monthlyPrice != null) return targetUser.monthlyPrice;
       if (targetUser?.instituteId) {
-        const inst = await client.institute.findUnique({ where: { id: targetUser.instituteId }, select: { monthlyPrice: true } });
+        const inst = await prisma.institute.findUnique({ where: { id: targetUser.instituteId }, select: { monthlyPrice: true } });
         if (inst?.monthlyPrice != null) return inst.monthlyPrice;
       }
     }
@@ -630,30 +580,43 @@ async function resolveMonthlyPriceForDeposit(deposit, client = prisma) {
 
 // تمدید اشتراک USER یا INSTITUTE از دیرترِ (الان، پایان فعلی) به‌اندازه‌ی days روز.
 // رکورد نبود؟ ساخته می‌شود (ACTIVE با همین تاریخ پایان).
-// client = تراکنش جاری (tx) یا prisma معمول — تا تمدید و تصاحب رسید اتمیک بمانند
-async function extendSubscription(targetKind, targetId, days, paymentRef, client = prisma) {
+async function extendSubscription(targetKind, targetId, days, paymentRef) {
   const base = targetKind === 'INSTITUTE'
-    ? await client.instituteSubscription.findUnique({ where: { instituteId: targetId } })
-    : await client.userSubscription.findUnique({ where: { userId: targetId } });
+    ? await prisma.instituteSubscription.findUnique({ where: { instituteId: targetId } })
+    : await prisma.userSubscription.findUnique({ where: { userId: targetId } });
 
   const currentEnd = base && new Date(base.endsAt).getTime() > Date.now() ? new Date(base.endsAt) : new Date();
   const newEndsAt = new Date(currentEnd.getTime() + days * 24 * 60 * 60 * 1000);
 
   const data = { status: 'ACTIVE', endsAt: newEndsAt, lastPaymentRef: paymentRef };
   if (targetKind === 'INSTITUTE') {
-    await client.instituteSubscription.upsert({
+    await prisma.instituteSubscription.upsert({
       where: { instituteId: targetId },
       create: { instituteId: targetId, status: 'ACTIVE', startsAt: new Date(), endsAt: newEndsAt, lastPaymentRef: paymentRef },
       update: data,
     });
   } else {
-    await client.userSubscription.upsert({
+    await prisma.userSubscription.upsert({
       where: { userId: targetId },
       create: { userId: targetId, status: 'ACTIVE', startsAt: new Date(), endsAt: newEndsAt, lastPaymentRef: paymentRef },
       update: data,
     });
   }
   return newEndsAt;
+}
+
+// عنوان مقصد تمدید برای نمایش در فهرست‌ها
+async function resolveTargetTitle(deposit) {
+  try {
+    if (deposit.targetKind === 'INSTITUTE') {
+      const inst = await prisma.institute.findUnique({ where: { id: deposit.targetId }, select: { name: true } });
+      return `مؤسسه ${inst?.name || ''}`.trim();
+    }
+    const u = await prisma.user.findUnique({ where: { id: deposit.targetId }, select: { fullName: true } });
+    return u?.fullName || 'کاربر';
+  } catch {
+    return null;
+  }
 }
 
 function serializeDeposit(d) {
@@ -676,27 +639,12 @@ function serializeDeposit(d) {
 }
 
 async function serializeMany(deposits) {
-  if (deposits.length === 0) return [];
-  // بارگذاری دسته‌ای همه‌ی مقصدها و پرداخت‌کننده‌ها — نه یک کوئری به‌ازای هر رسید (N+1)
-  const userIds = [...new Set([
-    ...deposits.map((d) => d.targetKind === 'USER' ? d.targetId : null),
-    ...deposits.map((d) => d.payerId),
-  ].filter(Boolean))];
-  const [users, institutes] = await Promise.all([
-    prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, fullName: true } }),
-    prisma.institute.findMany({
-      where: { id: { in: deposits.filter((d) => d.targetKind === 'INSTITUTE').map((d) => d.targetId) } },
-      select: { id: true, name: true },
-    }),
-  ]);
-  const userNames = new Map(users.map((u) => [u.id, u.fullName]));
-  const instNames = new Map(institutes.map((i) => [i.id, i.name]));
-  return deposits.map((d) => ({
+  return Promise.all(deposits.map(async (d) => ({
     ...serializeDeposit(d),
     payer: undefined, // payer در فهرست‌ها جدا بارگذاری می‌شود
-    targetTitle: d.targetKind === 'INSTITUTE' ? `مؤسسه ${instNames.get(d.targetId) || ''}`.trim() : userNames.get(d.targetId) || 'کاربر',
-    payerName: userNames.get(d.payerId) || null,
-  }));
+    targetTitle: await resolveTargetTitle(d),
+    payerName: (await prisma.user.findUnique({ where: { id: d.payerId }, select: { fullName: true } }))?.fullName || null,
+  })));
 }
 
 module.exports = {

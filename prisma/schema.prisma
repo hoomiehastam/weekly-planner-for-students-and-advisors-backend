@@ -456,7 +456,6 @@ model Tag {
   // لاگ‌های per-tag درون آیتم‌ها
   itemLogs PlanItemLog[]
 
-  @@unique([advisorId, name])
   @@index([advisorId])
 }
 

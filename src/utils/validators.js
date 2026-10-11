@@ -126,14 +126,11 @@ const cardSettingsSchema = z.object({
 });
 
 // ثبت رسید واریز توسط پرداخت‌کننده — عکس data URL مثل عکس پروفایل
-// فقط فرمت‌های امن تصویر؛ SVG ممنوع است (می‌تواند اسکریپت حمل کند)
 const createDepositSchema = z.object({
   targetKind: z.enum(['USER', 'INSTITUTE'], { errorMap: () => ({ message: 'مقصد واریز نامعتبر است' }) }),
   targetId: idSchema,
-  receiptImageUrl: z.string().regex(
-    /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/,
-    'عکس رسید باید data URL تصویر (PNG/JPEG/WebP/GIF) باشد'
-  ).max(700 * 1024, 'عکس رسید خیلی بزرگ است — حداکثر ۵۰۰ کیلوبایت'),
+  receiptImageUrl: z.string().startsWith('data:image/', 'عکس رسید باید data URL تصویر باشد')
+    .max(700 * 1024, 'عکس رسید خیلی بزرگ است — حداکثر ۵۰۰ کیلوبایت'),
   amount: z.coerce.number().int('مبلغ باید عدد صحیح باشد').min(0).max(10000000000).optional().nullable(),
   note: optionalText(300),
 });
