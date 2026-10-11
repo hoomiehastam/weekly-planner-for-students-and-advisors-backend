@@ -29,6 +29,10 @@ async function createTag(req, res, next) {
 
     res.status(201).json({ tag });
   } catch (err) {
+    // کلید یکتای (advisorId, name) — تگ تکراری به‌جای ۵۰۰، پیام دوستانه بدهد
+    if (err?.code === 'P2002') {
+      return res.status(409).json({ error: 'تگی با همین نام دارید' });
+    }
     next(err);
   }
 }

@@ -11,6 +11,15 @@ const { pruneAdvisorStudentLinks, pruneOrphanRows } = require('./utils/orphans')
 const PORT = process.env.PORT || 4000;
 const SWEEP_ON_BOOT = process.env.ORPHAN_SWEEP_ON_BOOT === '1';
 
+// گارد بوت: بدون JWT_SECRET معتبر، سرور نباید بالا بیاید — وگرنه jwt با
+// مقدار undefined امضا می‌کند و هر درخواست ورود ۵۰۰ می‌دهد (یا بدتر:
+// در محیطی که secret ضعیف باشد، توکن‌ها قابل جعل‌اند). زود و با صدای بلند بمیر.
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+  console.error('❌ JWT_SECRET تنظیم نشده یا کوتاه‌تر از ۳۲ کاراکتر است. یک مقدار تصادفی بلند بسازید:');
+  console.error('   node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"');
+  process.exit(1);
+}
+
 async function start() {
   try {
     // یک تست ساده‌ی اتصال به دیتابیس قبل از بالا آمدن سرور

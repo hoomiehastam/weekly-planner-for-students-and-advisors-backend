@@ -72,11 +72,12 @@ async function deleteReminder(req, res, next) {
       return res.status(404).json({ error: 'یادآور یافت نشد' });
     }
 
-    // بررسی دسترسی: فقط دانش‌آموز دریافت‌کننده یا مشاور فرستنده می‌توانند حذف کنند
-    if (req.user.role === 'STUDENT' && reminder.studentId !== req.user.id) {
-      return res.status(403).json({ error: 'این یادآور متعلق به شما نیست' });
-    }
-    if (req.user.role === 'ADVISOR' && reminder.advisorId !== req.user.id) {
+    // بررسی دسترسی: به‌صورت پیش‌فرض رد — فقط دانش‌آموز دریافت‌کننده یا مشاور فرستنده
+    // (و سوپرادمین) اجازه‌ی حذف دارند؛ نقش‌های دیگر (والد، مدیر مؤسسه و…) رد می‌شوند.
+    const isStudentOwner = req.user.role === 'STUDENT' && reminder.studentId === req.user.id;
+    const isAdvisorOwner = req.user.role === 'ADVISOR' && reminder.advisorId === req.user.id;
+    const isSuperadmin = req.user.role === 'SUPERADMIN';
+    if (!isStudentOwner && !isAdvisorOwner && !isSuperadmin) {
       return res.status(403).json({ error: 'این یادآور متعلق به شما نیست' });
     }
 

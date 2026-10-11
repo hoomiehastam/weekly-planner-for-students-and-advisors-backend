@@ -6,6 +6,11 @@ function validationError(msg) {
   return Object.assign(new Error(msg), { status: 400 });
 }
 
+// عکس سؤال فقط data URL تصویر با فرمت‌های امن است — SVG ممنوع چون می‌تواند
+// اسکریپت حمل کند، و URL خارجی ممنوع چون آی‌پی کاربران را به سرور ثالث می‌فرستد.
+const QUESTION_IMAGE_RE = /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+const QUESTION_IMAGE_MAX = 700 * 1024; // ~۵۰۰KB عکس واقعی
+
 // اعتبارسنجی و نرمال‌سازی یک سؤال.
 // خروجی همان ساختاری است که Prisma برای ساخت سؤال نیاز دارد.
 function validateQuestion(q, n, idx) {
@@ -15,6 +20,15 @@ function validateQuestion(q, n, idx) {
 
   const text = q.text ? String(q.text).trim() : '';
   const imageUrl = q.imageUrl ? String(q.imageUrl).trim() : '';
+
+  if (imageUrl) {
+    if (imageUrl.length > QUESTION_IMAGE_MAX) {
+      throw validationError(`عکس سؤال ${n} خیلی بزرگ است — حداکثر ۵۰۰ کیلوبایت`);
+    }
+    if (!QUESTION_IMAGE_RE.test(imageUrl)) {
+      throw validationError(`عکس سؤال ${n} باید data URL تصویر (PNG/JPEG/WebP/GIF) باشد`);
+    }
+  }
 
   if (!text && !imageUrl) {
     throw validationError(`سؤال ${n} باید متن یا عکس داشته باشد`);

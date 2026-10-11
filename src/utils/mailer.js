@@ -15,6 +15,17 @@
 let transporter = null;
 let transporterInitAttempted = false;
 
+// فرار HTML برای مقادیر کاربر (نام و…) که داخل قالب ایمیل می‌روند —
+// بدون این، یک fullName حاوی <script> می‌توانست داخل HTML ایمیل تزریق شود.
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 async function getTransporter() {
   if (transporter) return transporter;
   if (transporterInitAttempted) return null;
@@ -74,6 +85,8 @@ async function sendMail({ to, subject, html, text }) {
 
 // ایمیل بازیابی رمز عبور — لینک بازنشانی برای کاربر می‌فرستد
 async function sendPasswordResetEmail({ to, resetUrl, userName }) {
+  const safeName = escapeHtml(userName || '');
+  const safeUrl = escapeHtml(resetUrl || '');
   const subject = 'بازیابی رمز عبور — پلتفرم کنکور';
   const text = `سلام ${userName || ''}،
 برای بازیابی رمز عبور روی لینک زیر کلیک کنید (یا آن را در مرورگر کپی کنید):
@@ -83,16 +96,16 @@ ${resetUrl}
   const html = `
 <div dir="rtl" style="font-family: sans-serif; line-height:1.8; color:#222;">
   <h2 style="color:#4a3fbe;">بازیابی رمز عبور</h2>
-  <p>سلام ${userName || ''}،</p>
+  <p>سلام ${safeName}،</p>
   <p>برای بازیابی رمز عبور خود روی دکمه‌ی زیر کلیک کنید:</p>
   <p style="text-align:center; margin: 24px 0;">
-    <a href="${resetUrl}" style="background:linear-gradient(135deg,#ff8a3d,#ff6b9d); color:#fff; padding:12px 24px; border-radius:8px; text-decoration:none; font-weight:700;">
+    <a href="${safeUrl}" style="background:linear-gradient(135deg,#ff8a3d,#ff6b9d); color:#fff; padding:12px 24px; border-radius:8px; text-decoration:none; font-weight:700;">
       بازیابی رمز عبور
     </a>
   </p>
   <p style="font-size:13px; color:#666;">
     یا این لینک را در مرورگر کپی کنید:<br>
-    <code dir="ltr">${resetUrl}</code>
+    <code dir="ltr">${safeUrl}</code>
   </p>
   <p style="font-size:13px; color:#666;">این لینک تا ۱ ساعت معتبر است.</p>
   <hr style="border:0; border-top:1px solid #eee; margin:24px 0;">
@@ -104,6 +117,7 @@ ${resetUrl}
 // ایمیل کد یک‌بارمصرف (OTP) — برای ورود بدون رمز عبور یا بازیابی حساب
 // کد به‌صورت متن واضح فرستاده می‌شود و تا زمان مشخصی معتبر است.
 async function sendOtpEmail({ to, otp, userName, ttlMinutes = 10 }) {
+  const safeName = escapeHtml(userName || '');
   const subject = `کد ورود یک‌بارمصرف: ${otp} — پلتفرم کنکور`;
   const text = `سلام ${userName || ''}،
 کد یک‌بارمصرف ورود شما:
@@ -113,7 +127,7 @@ ${otp}
   const html = `
 <div dir="rtl" style="font-family: sans-serif; line-height:1.8; color:#222;">
   <h2 style="color:#4a3fbe;">کد ورود یک‌بارمصرف</h2>
-  <p>سلام ${userName || ''}،</p>
+  <p>سلام ${safeName}،</p>
   <p>کد ورود یک‌بارمصرف شما:</p>
   <p style="text-align:center; margin: 24px 0;">
     <span dir="ltr" style="display:inline-block; background:#f4f2ff; border:1px dashed #4a3fbe; color:#4a3fbe; padding:12px 28px; border-radius:8px; font-size:28px; font-weight:800; letter-spacing:6px;">${otp}</span>

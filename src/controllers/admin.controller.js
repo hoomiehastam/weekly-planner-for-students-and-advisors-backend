@@ -516,6 +516,15 @@ async function assignAdvisorToInstitute(req, res, next) {
         if (inst.status !== 'ACTIVE') {
           return res.status(400).json({ error: 'مؤسسه‌ی انتخاب‌شده هنوز تأیید نشده است' });
         }
+        // سوپرادمین هم می‌تواند به مؤسسه تخصیص یابد (یا از آن جدا شود)
+        // نکته: رکورد مشاور باید قبل از بلوک ظرفیت خوانده شود — وگرنه خطای
+        // ReferenceError (استفاده قبل از تعریف) کل درخواست را ۵۰۰ می‌کرد.
+        const advisor = await prisma.user.findFirst({
+          where: { id, role: { in: ['ADVISOR', 'SUPERADMIN'] } },
+        });
+        if (!advisor) {
+          return res.status(404).json({ error: 'مشاور یافت نشد' });
+        }
         // محدودیت ظرفیت مشاوران مؤسسه — فقط وقتی مشاور را «به داخل» مؤسسه می‌بریم
         if (advisor.instituteId !== trimmed) {
           const [sub, currentCount] = await Promise.all([
@@ -529,14 +538,6 @@ async function assignAdvisorToInstitute(req, res, next) {
         }
         instituteId = trimmed;
       }
-    }
-
-    // سوپرادمین هم می‌تواند به مؤسسه تخصیص یابد (یا از آن جدا شود)
-    const advisor = await prisma.user.findFirst({
-      where: { id, role: { in: ['ADVISOR', 'SUPERADMIN'] } },
-    });
-    if (!advisor) {
-      return res.status(404).json({ error: 'مشاور یافت نشد' });
     }
 
     // هشدار: اگر مشاور دانش‌آموزانی از مؤسسه‌ی دیگری داشته باشد، تغییر مؤسسه

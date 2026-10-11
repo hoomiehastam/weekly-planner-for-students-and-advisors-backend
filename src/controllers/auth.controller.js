@@ -611,7 +611,8 @@ async function updateMyProfile(req, res, next) {
       if (role !== 'STUDENT') {
         return res.status(403).json({ error: 'فقط دانش‌آموز رشته‌ی تحصیلی دارد' });
       }
-      if (!field) {
+      // فقط مقادیر enum معتبر — وگرنه Prisma خطای اعتبارسنجی (۵۰۰) می‌دهد
+      if (!['HUMANITIES', 'MATH_PHYSICS', 'EXPERIMENTAL'].includes(field)) {
         return res.status(400).json({ error: 'رشته‌ی تحصیلی نامعتبر است' });
       }
       data.field = field;
