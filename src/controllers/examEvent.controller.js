@@ -40,7 +40,12 @@ function parseDueAt(value) {
 // پاسخ: { events: [...], access } — مرتب بر اساس تاریخ برگزاری (نزدیک‌ترین اول)
 async function listStudentExamEvents(req, res, next) {
   try {
-    const { studentId } = req.params;
+    // دو مسیر به این کنترلر می‌رسند:
+    //   GET /api/students/:studentId/exam-events  → دانش‌آموز/مشاور/والد
+    //   GET /api/students/me/exam-events          → فقط خودِ دانش‌آموز (بدون پارامتر مسیر)
+    // در مسیر دوم req.params.studentId وجود ندارد؛ اگر جایگزین نکنیم
+    // getStudentAccess با undefined کار می‌کند و همیشه ۴۰۳ می‌دهد.
+    const studentId = req.params.studentId || req.user.id;
     const access = await getStudentAccess(req.user.id, studentId);
     if (!access) {
       return res.status(403).json({ error: 'به این دانش‌آموز دسترسی نداری' });
