@@ -1,5 +1,6 @@
 const prisma = require('../config/prisma');
 const { getStudentAccess } = require('../utils/studentAccess');
+const { toLatinDigits, toFaDigits } = require('../utils/faDigits');
 
 // ====== برنامه‌ی امتحان‌ها و پرسش‌های مدرسه ======
 // دانش‌آموز خودش ثبت می‌کند که چه روزی چه امتحان یا پرسشی دارد:
@@ -35,6 +36,28 @@ function parseDueAt(value) {
   return d;
 }
 
+// تخمین دانش‌آموز از تعداد بازه‌ی مطالعه‌ی مورد نیاز برای این امتحان/پرسش.
+//   خالی (null / undefined / '') → null یعنی «نظری نداده» (اختیاری است)
+//   عدد صحیح ۱ تا ۹۹ → همان عدد
+// ارقام فارسی/عربی را هم می‌پذیریم تا اگر کلاینت دیگری (یا curl) عدد فارسی
+// فرستاد، بی‌دلیل رد نشود.
+const MAX_NEEDED_SESSIONS = 99;
+
+function normalizeNeededSessions(value) {
+  if (value === null || value === undefined || value === '') return null;
+
+  const raw = toLatinDigits(value).trim().replace(/[,\s٬،]/g, '');
+  if (!/^\d+$/.test(raw)) {
+    throw new Error('تعداد بازه باید یک عدد صحیح باشد');
+  }
+
+  const n = Number(raw);
+  if (n < 1 || n > MAX_NEEDED_SESSIONS) {
+    throw new Error(`تعداد بازه باید بین ۱ تا ${toFaDigits(MAX_NEEDED_SESSIONS)} باشد`);
+  }
+  return n;
+}
+
 // --- فهرست برنامه‌ی امتحان‌ها ---
 // GET /api/students/:studentId/exam-events — دانش‌آموز/مشاور/والد با دسترسی
 // پاسخ: { events: [...], access } — مرتب بر اساس تاریخ برگزاری (نزدیک‌ترین اول)
@@ -60,6 +83,7 @@ async function listStudentExamEvents(req, res, next) {
         kind: true,
         subject: true,
         dueAt: true,
+        neededSessions: true,
         note: true,
         createdAt: true,
       },
@@ -78,13 +102,15 @@ async function createExamEvent(req, res, next) {
     if (req.user.role !== 'STUDENT') {
       return res.status(403).json({ error: 'فقط خودِ دانش‌آموز برنامه‌ی امتحان‌هایش را ثبت می‌کند' });
     }
-    const { title, kind, subject, dueAt, note } = req.body;
+    const { title, kind, subject, dueAt, note, neededSessions } = req.body;
 
     let kindValue;
     let dueDate;
+    let sessionsValue;
     try {
       kindValue = normalizeKind(kind, { required: true });
       dueDate = parseDueAt(dueAt);
+      sessionsValue = normalizeNeededSessions(neededSessions);
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
@@ -101,6 +127,7 @@ async function createExamEvent(req, res, next) {
         kind: kindValue,
         subject: normalizeText(subject, 60),
         dueAt: dueDate,
+        neededSessions: sessionsValue,
         note: normalizeText(note, 500),
       },
     });
@@ -124,7 +151,7 @@ async function updateExamEvent(req, res, next) {
       return res.status(403).json({ error: 'فقط خودِ دانش‌آموز برنامه‌اش را ویرایش می‌کند' });
     }
 
-    const { title, kind, subject, dueAt, note } = req.body;
+    const { title, kind, subject, dueAt, note, neededSessions } = req.body;
     const data = {};
     if (title !== undefined) {
       const t = normalizeText(title, 190);
@@ -140,6 +167,14 @@ async function updateExamEvent(req, res, next) {
     }
     if (subject !== undefined) data.subject = normalizeText(subject, 60);
     if (note !== undefined) data.note = normalizeText(note, 500);
+    if (neededSessions !== undefined) {
+      try {
+        // null صریح هم یعنی «پاک کردنِ عدد» (دانش‌آموز نظرش را پس گرفته)
+        data.neededSessions = normalizeNeededSessions(neededSessions);
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+    }
     if (dueAt !== undefined) {
       try {
         data.dueAt = parseDueAt(dueAt);
@@ -184,4 +219,5 @@ module.exports = {
   updateExamEvent,
   deleteExamEvent,
   KINDS,
+  MAX_NEEDED_SESSIONS,
 };
