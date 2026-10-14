@@ -318,6 +318,8 @@ model User {
   examSubmissions ExamSubmission[] @relation("ExamSubmissionStudent")
   // نمرات آزمون‌های آزمایشی که خودش ثبت کرده
   mockExamScores  MockExamScore[]  @relation("MockExamStudent")
+  // برنامه‌ی امتحان‌ها و پرسش‌های مدرسه که خودش ثبت کرده
+  examEvents      StudentExamEvent[] @relation("StudentExamEventStudent")
 
   // توکن‌های بازنشانی رمز عبور (فراموشی رمز)
   passwordResets PasswordReset[]
@@ -719,7 +721,7 @@ model MockExamScore {
   title      String   @db.VarChar(190)
   // تاریخ برگزاری — نمودار بر همین اساس مرتب می‌شود
   takenAt    DateTime
-  // تراز کل (۱۲۰۰ تا ۳۶۵۰) — اختیاری؛ اگر نداند خالی می‌گذارد
+  // تراز کل — اختیاری؛ اگر نداند خالی می‌گذارد. فقط باید نامنفی باشد (بدون سقف)
   rank       Int?
   // درصد هر درس — کلید: HUMANITIES/MATH_PHYSICS/EXPERIMENTAL générale
   // درصدها بین ۰ تا ۱۰۰ و فارسی/انگلیسی هر دو قبول است
@@ -731,4 +733,33 @@ model MockExamScore {
   student User @relation("MockExamStudent", fields: [studentId], references: [id], onDelete: Cascade)
 
   @@index([studentId, takenAt])
+}
+
+// ====== برنامه‌ی امتحان‌ها و پرسش‌های مدرسه‌ی دانش‌آموز ======
+// دانش‌آموز ثبت می‌کند چه روزی چه امتحان (EXAM) یا پرسشی (QUIZ) دارد.
+// این فهرست در پنل خودِ دانش‌آموز ویرایش‌پذیر و در پنل مشاورِ متصل (و والد)
+// فقط‌خواندنی نمایش داده می‌شود تا برنامه‌ریزی با امتحان‌ها هم‌تراز شود.
+enum ExamEventKind {
+  EXAM // امتحان (نوبت/میان‌ترم/پایان‌ترم...)
+  QUIZ // پرسش کلاسی/کوییز
+}
+
+model StudentExamEvent {
+  id        String        @id @default(cuid())
+  studentId String        @db.VarChar(100)
+  // عنوان الزامی (مثلاً «امتحان ریاضی نوبت اول»)
+  title     String        @db.VarChar(190)
+  kind      ExamEventKind @default(EXAM)
+  // نام درس — اختیاری (مثلاً «ریاضی ۲»)
+  subject   String?       @db.VarChar(60)
+  // تاریخ برگزاری — فهرست بر همین اساس مرتب می‌شود
+  dueAt     DateTime
+  // توضیح اختیاری (مثلاً «فصل ۱ تا ۴ — نمره‌دار»)
+  note      String?       @db.Text
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  student User @relation("StudentExamEventStudent", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId, dueAt])
 }

@@ -13,6 +13,12 @@ const {
   listMockExamScores,
   createMockExamScore,
 } = require('../controllers/mockExam.controller');
+const {
+  listStudentExamEvents,
+  createExamEvent,
+  updateExamEvent,
+  deleteExamEvent,
+} = require('../controllers/examEvent.controller');
 
 // مشاور: فهرست دانش‌آموزهای خودش (شامل شماره تماس و توضیحات)
 router.get('/mine', authenticate, requireRole('ADVISOR', 'SUPERADMIN'), listMyStudents);
@@ -42,5 +48,19 @@ router.get('/:studentId/mock-exams', authenticate, listMockExamScores);
 
 // ثبت نمره‌ی جدید: فقط خود دانش‌آموز
 router.post('/:studentId/mock-exams', authenticate, requireRole('STUDENT'), createMockExamScore);
+
+// ====== برنامه‌ی امتحان‌ها و پرسش‌های مدرسه ======
+// دانش‌آموز: فهرست امتحان/پرسش‌های خودش
+router.get('/me/exam-events', authenticate, requireRole('STUDENT'), listStudentExamEvents);
+
+// دانش‌آموز: ثبت مورد جدید
+router.post('/me/exam-events', authenticate, requireRole('STUDENT'), createExamEvent);
+
+// دانش‌آموز: ویرایش/حذف مورد خودش
+router.put('/me/exam-events/:eventId', authenticate, requireRole('STUDENT'), updateExamEvent);
+router.delete('/me/exam-events/:eventId', authenticate, requireRole('STUDENT'), deleteExamEvent);
+
+// مشاور/والد/خود دانش‌آموز: فهرست امتحان‌های یک دانش‌آموز (با دسترسی)
+router.get('/:studentId/exam-events', authenticate, listStudentExamEvents);
 
 module.exports = router;

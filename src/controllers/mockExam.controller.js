@@ -1,4 +1,5 @@
 const prisma = require('../config/prisma');
+const { getStudentAccess } = require('../utils/studentAccess');
 
 // ====== نمرات آزمون‌های آزمایشی (MOCK) ======
 // دانش‌آموز نتیجه‌ی آزمون‌های آزمایشی بیرون از پلتفرم را ثبت می‌کند:
@@ -43,31 +44,17 @@ function normalizePercentages(input) {
   return Object.keys(result).length > 0 ? result : null;
 }
 
-// نرمال‌سازی تراز — ۰ تا ۳۶۵۰ (سقف تراز کنکور سراسری)
+// نرمال‌سازی تراز — فقط «منفی نبودن» شرط است؛ سقفی برایش تعریف نمی‌کنیم.
+// (تراز آزمون‌های آزمایشی مؤسسه‌ها می‌تواند بالاتر از سقف کنکور سراسری باشد.)
 function normalizeRank(rank) {
   if (rank === null || rank === undefined || rank === '') return null;
   const v = Number(rank);
-  if (!Number.isFinite(v) || !Number.isInteger(v) || v < 0 || v > 3650) {
-    throw new Error('تراز باید عدد صحیح بین ۰ و ۳۶۵۰ باشد');
+  if (!Number.isFinite(v) || !Number.isInteger(v) || v < 0) {
+    throw new Error('تراز باید عدد صحیح و نامنفی باشد');
   }
   return v;
 }
 
-// پیدا کردن چرا این کاربر حق دیدن نمرات این دانش‌آموز را دارد:
-//   خودش / مشاور متصل (ACTIVE) / والد متصل
-// null یعنی دسترسی ندارد.
-async function getAccess(actorId, studentId) {
-  if (actorId === studentId) return 'SELF';
-  const [self, advisor, parent] = await Promise.all([
-    prisma.user.findUnique({ where: { id: studentId }, select: { id: true } }),
-    prisma.advisorStudentLink.findFirst({ where: { advisorId: actorId, studentId, status: 'ACTIVE' } }),
-    prisma.parentLink.findFirst({ where: { parentId: actorId, studentId } }),
-  ]);
-  if (!self) return null;
-  if (advisor) return 'ADVISOR';
-  if (parent) return 'PARENT';
-  return null;
-}
 
 // مشاور می‌تواند فقط به دانش‌آموزهای متصل، والد فقط به فرزندها و دانش‌آموز فقط
 // به نمرات خودش ثبت/ویرایش کنند. والد فقط-خواندنی است.
@@ -79,7 +66,7 @@ async function getAccess(actorId, studentId) {
 async function listMockExamScores(req, res, next) {
   try {
     const studentId = req.params.studentId;
-    const access = await getAccess(req.user.id, studentId);
+    const access = await getStudentAccess(req.user.id, studentId);
     if (!access) {
       return res.status(403).json({ error: 'به این دانش‌آموز دسترسی نداری' });
     }
