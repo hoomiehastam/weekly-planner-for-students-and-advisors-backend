@@ -76,6 +76,17 @@ async function assertTagsValid(db, tags, advisorId) {
   }
 }
 
+// فصل و بخش: متن اختیاری کوتاه؛ فاصله‌های اضافی حذف می‌شود و خالی به null تبدیل می‌شود
+function cleanShortText(value, label) {
+  if (value === null || value === undefined) return null;
+  const v = String(value).replace(/\s+/g, ' ').trim();
+  if (!v) return null;
+  if (v.length > 191) {
+    throw new Error(`${label} نباید بیشتر از ۱۹۱ نویسه باشد`);
+  }
+  return v;
+}
+
 // نرمال‌سازی یک آیتم ورودی به ساختار پایدار برای ساخت/به‌روزرسانی
 function toItemInput(it, idx) {
   const tags = Array.isArray(it.tags)
@@ -84,6 +95,8 @@ function toItemInput(it, idx) {
   return {
     id: it.id || null,
     subject: String(it.subject?.trim() || ''),
+    chapter: cleanShortText(it.chapter, 'فصل'),
+    section: cleanShortText(it.section, 'بخش'),
     description: it.description ? String(it.description).trim() : null,
     startTime: validateTime(it.startTime),
     endTime: validateTime(it.endTime),
@@ -96,6 +109,8 @@ function toItemInput(it, idx) {
 function itemCreateData(it, dayId) {
   const data = {
     subject: it.subject,
+    chapter: it.chapter,
+    section: it.section,
     description: it.description,
     startTime: it.startTime,
     endTime: it.endTime,
@@ -170,6 +185,8 @@ async function replaceDays(tx, { planId, advisorId, days }) {
         where: { id: it.id },
         data: {
           subject: it.subject,
+          chapter: it.chapter,
+          section: it.section,
           description: it.description,
           startTime: it.startTime,
           endTime: it.endTime,
@@ -207,7 +224,7 @@ async function replaceDays(tx, { planId, advisorId, days }) {
 
 // یک برنامه‌ی مطالعاتی جدید می‌سازد؛ همراه با روزها و آیتم‌ها و تگ‌ها
 // بدنه‌ی درخواست:
-//   { studentId, title, note?, startsAt, expiresAt?, days: [{ dayOfWeek, items: [{ subject, description?, startTime?, endTime?, tags: [tagId] }] }] }
+//   { studentId, title, note?, startsAt, expiresAt?, days: [{ dayOfWeek, items: [{ subject, chapter?, section?, description?, startTime?, endTime?, tags: [tagId] }] }] }
 async function createPlan(req, res, next) {
   try {
     const { studentId, title, note, startsAt, expiresAt, days = [] } = req.body;

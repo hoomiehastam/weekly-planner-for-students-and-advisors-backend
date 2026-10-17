@@ -500,7 +500,12 @@ model PlanDay {
 model PlanItem {
   id          String     @id @default(cuid())
   dayId       String
+  // نام درس (مثل «ریاضی») — فصل و بخش جداگانه ذخیره می‌شوند تا هر سه مستقل بررسی شوند
   subject     String     @db.Text
+  // فصل (مثل «فصل ۳: تابع») — اختیاری
+  chapter     String?    @db.VarChar(191)
+  // بخش/مبحث داخل فصل (مثل «بخش ۲: حد») — اختیاری
+  section     String?    @db.VarChar(191)
   description String?    @db.Text
   // ساعت شروع و پایان این بازه‌ی درسی، با فرمت "HH:MM" (مثل "08:30")
   // به‌صورت رشته ذخیره می‌شود تا نمایش فارسی و محاسبه‌ی ساده‌تر باشد
