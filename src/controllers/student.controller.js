@@ -1,6 +1,7 @@
 const prisma = require('../config/prisma');
 const { pruneAdvisorStudentLinks } = require('../utils/orphans');
 const { CAPACITY_ERROR, remainingInstituteCapacity } = require('../utils/subscription');
+const { getAdvisorRoom } = require('../utils/capacity');
 
 // فهرست دانش‌آموزهای «فعال» مشاور — فقط اتصال‌های ACTIVE.
 // درخواست‌های PENDING اینجا نیستند (به /api/advisors/me/pending-students بروید)
@@ -155,6 +156,12 @@ async function chooseMyAdvisor(req, res, next) {
     const advisorFieldList = advisor.advisorFields.map((af) => af.field);
     if (!advisorFieldList.includes(student.field)) {
       return res.status(400).json({ error: 'این مشاور در رشته‌ی تو تخصص ندارد' });
+    }
+
+    // ظرفیت: اگر مشاور (یا آموزشگاهش) پر باشد، از همین‌جا درخواست نمی‌گیرد
+    const room = await getAdvisorRoom(advisor);
+    if (!room.ok) {
+      return res.status(403).json({ error: room.error, code: 'CAPACITY_FULL' });
     }
 
     // دانش‌آموز مؤسسه‌ای باید قبلاً توسط مدیر مؤسسه تأیید شده باشد (ACTIVE)؛

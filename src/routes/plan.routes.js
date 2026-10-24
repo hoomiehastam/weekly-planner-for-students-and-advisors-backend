@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, requireRole } = require('../middleware/auth.middleware');
+const { validate, schemas } = require('../utils/validators');
 const {
   createPlan,
   updatePlan,
@@ -11,6 +12,7 @@ const {
   updateItemProgress,
   setItemTagLog,
   deleteItemTagLog,
+  createExamDrafts,
 } = require('../controllers/plan.controller');
 
 router.use(authenticate);
@@ -25,6 +27,8 @@ router.delete('/items/:id/tag-log', requireRole('STUDENT'), deleteItemTagLog);
 
 // این چهار مسیر فقط برای مشاور است
 router.post('/', requireRole('ADVISOR', 'SUPERADMIN'), createPlan);
+// پیش‌نویس برنامه از بازه‌ی امتحان‌های دانش‌آموز (برای هر هفته یک پیش‌نویس)
+router.post('/exam-drafts', requireRole('ADVISOR', 'SUPERADMIN'), validate(schemas.examDraft), createExamDrafts);
 router.put('/:id', requireRole('ADVISOR', 'SUPERADMIN'), updatePlan);
 router.delete('/:id', requireRole('ADVISOR', 'SUPERADMIN'), deletePlan);
 router.get('/student/:studentId', requireRole('ADVISOR', 'SUPERADMIN'), getPlansForStudent);

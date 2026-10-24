@@ -1,5 +1,6 @@
 const prisma = require('../config/prisma');
 const { isSubscriptionActive, effectiveAccessInfo, remainingInstituteCapacity, CAPACITY_ERROR } = require('../utils/subscription');
+const { getActiveDiscountPercent, applyDiscount, activateReferralForPayer } = require('../utils/referral');
 
 // ====== اشتراک کاربر لاگین‌شده ======
 // وضعیت اشتراک فردی + اشتراک مؤسسه (اگر عضو باشد) + دسترسی مؤثر
@@ -293,6 +294,15 @@ async function getDepositContext(req, res, next) {
       };
     }
 
+    // تخفیف دعوت: روی شهریه‌ی ماهانه‌ی دانش‌آموزِ مقصد اعمال می‌شود (مبلغ پایه دست‌نخورده می‌ماند)
+    if (payee && payee.targetKind === 'USER' && payee.targetId) {
+      const discountPercent = await getActiveDiscountPercent(payee.targetId);
+      payee.discountPercent = discountPercent;
+      payee.monthlyPriceAfterDiscount = discountPercent > 0
+        ? applyDiscount(payee.monthlyPrice, discountPercent)
+        : payee.monthlyPrice;
+    }
+
     res.json({ payee, systemCard });
   } catch (err) {
     next(err);
@@ -519,6 +529,14 @@ async function approveDeposit(req, res, next) {
       data: { status: 'APPROVED', approvedDays: finalDays, decidedAt: new Date(), newEndsAt, decisionNote: decisionNote || null },
     });
 
+    // اولین پرداخت تأییدشده‌ی دانش‌آموزِ دعوت‌شده → تخفیف دعوت برای هر دو طرف فعال می‌شود
+    // (از پرداخت بعدی اعمال می‌شود؛ شکست این مرحله نباید تأیید رسید را بشکند)
+    try {
+      if (deposit.targetKind === 'USER') await activateReferralForPayer(deposit.targetId);
+    } catch (e) {
+      console.error('[referral] activation failed:', e.message);
+    }
+
     res.json({
       message: `رسید تأیید شد؛ اشتراک ${finalDays} روز تمدید شد${autoCalculated ? ' (محاسبه‌ی خودکار بر اساس مبلغ)' : ''}`,
       deposit: serializeDeposit(updated),
@@ -556,7 +574,19 @@ async function rejectDeposit(req, res, next) {
 
 // قیمت ماهانه‌ی مرتبط با یک رسید (تومان) برای محاسبه‌ی خودکار روزهای تمدید.
 // اولویت: قیمت روی کارت صاحب → قیمت مؤسسه (مقصد مؤسسه‌ای یا مؤسسه‌ی صاحب) → قیمت کاربر مقصد.
+// قیمت مؤثر = قیمت پایه منهای تخفیف دعوتِ فعالِ دانش‌آموزِ مقصد (مبلغ واریزی یکسان → روز بیشتر)
 async function resolveMonthlyPriceForDeposit(deposit) {
+  const base = await resolveBaseMonthlyPriceForDeposit(deposit);
+  if (base == null || deposit.targetKind !== 'USER') return base;
+  try {
+    const percent = await getActiveDiscountPercent(deposit.targetId);
+    return percent > 0 ? applyDiscount(base, percent) : base;
+  } catch {
+    return base;
+  }
+}
+
+async function resolveBaseMonthlyPriceForDeposit(deposit) {
   try {
     const ownerCard = await prisma.cardSettings.findFirst({ where: { ownerKind: 'USER', ownerId: deposit.ownerId } });
     if (ownerCard?.monthlyPrice != null) return ownerCard.monthlyPrice;
@@ -643,6 +673,13 @@ async function serializeMany(deposits) {
     ...serializeDeposit(d),
     payer: undefined, // payer در فهرست‌ها جدا بارگذاری می‌شود
     targetTitle: await resolveTargetTitle(d),
+    // قیمت مؤثر ماهانه (بعد از تخفیف دعوت) و درصد تخفیف — برای پیش‌نمایش روزهای تمدید در مودال تأیید
+    ...(d.status === 'PENDING'
+      ? {
+          monthlyPrice: await resolveMonthlyPriceForDeposit(d),
+          discountPercent: d.targetKind === 'USER' ? await getActiveDiscountPercent(d.targetId).catch(() => 0) : 0,
+        }
+      : {}),
     payerName: (await prisma.user.findUnique({ where: { id: d.payerId }, select: { fullName: true } }))?.fullName || null,
   })));
 }

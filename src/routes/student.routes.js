@@ -13,6 +13,7 @@ const {
   listMockExamScores,
   createMockExamScore,
 } = require('../controllers/mockExam.controller');
+const { listNotes, createNote, updateNote, deleteNote } = require('../controllers/note.controller');
 const {
   listStudentExamEvents,
   createExamEvent,
@@ -62,5 +63,13 @@ router.delete('/me/exam-events/:eventId', authenticate, requireRole('STUDENT'), 
 
 // مشاور/والد/خود دانش‌آموز: فهرست امتحان‌های یک دانش‌آموز (با دسترسی)
 router.get('/:studentId/exam-events', authenticate, listStudentExamEvents);
+
+// ====== یادداشت خصوصی مشاور ======
+// فقط مشاور/سوپرادمین (در نقش مشاور) و فقط برای دانش‌آموزان متصل خودش؛ هیچ مسیری برای دانش‌آموز/والد نیست.
+const advisorOnly = [authenticate, requireRole('ADVISOR', 'SUPERADMIN')];
+router.get('/:studentId/notes', ...advisorOnly, listNotes);
+router.post('/:studentId/notes', ...advisorOnly, validate(schemas.note), createNote);
+router.put('/:studentId/notes/:noteId', ...advisorOnly, validate(schemas.note), updateNote);
+router.delete('/:studentId/notes/:noteId', ...advisorOnly, deleteNote);
 
 module.exports = router;

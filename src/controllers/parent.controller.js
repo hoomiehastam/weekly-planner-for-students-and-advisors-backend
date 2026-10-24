@@ -131,7 +131,7 @@ async function getChildSummary(req, res, next) {
 
     const studentId = req.params.studentId;
     const plans = await prisma.studyPlan.findMany({
-      where: { studentId },
+      where: { studentId, isDraft: false },
       include: {
         days: { include: { items: { include: { itemLogs: true } } } },
       },

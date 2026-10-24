@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { sendOtpEmail } = require('../utils/mailer');
 const { remainingInstituteCapacity, CAPACITY_ERROR } = require('../utils/subscription');
+const { isStudentCountable, countActiveStudentsOfAdvisor, countActiveStudentsOfInstitute } = require('../utils/capacity');
 const { writeAuditLog } = require('../utils/audit');
 const { pruneAdvisorStudentLinks, deleteUserRelatedRows } = require('../utils/orphans');
 
@@ -75,6 +76,7 @@ async function listInstitutes(req, res, next) {
         createdAt: true,
         // مبلغ ماهانه‌ی اشتراک مؤسسه (تومان) — توسط سوپرادمین تعیین می‌شود
         monthlyPrice: true,
+        referralEnabled: true,
         subscription: { select: { status: true, tier: true, endsAt: true, maxAdvisors: true, maxStudents: true } },
         // نماینده‌ی فعلی (سردار) — سوپرادمین او را تعیین می‌کند
         leader: { select: { id: true, fullName: true } },
@@ -88,7 +90,18 @@ async function listInstitutes(req, res, next) {
       prisma.cardSettings.findFirst({ where: { ownerKind: 'SYSTEM' } }),
     ]);
     const cardByInstitute = new Map(instCards.map((c) => [c.ownerId, c]));
-    const withCards = institutes.map((i) => ({ ...i, card: cardByInstitute.get(i.id) || null }));
+    // دانش‌آموزان فعال هر آموزشگاه (مبنای سقف) + هشدار سقف پایین‌تر از تعداد فعلی
+    const activeCounts = await Promise.all(institutes.map((i) => countActiveStudentsOfInstitute(i.id)));
+    const withCards = institutes.map((i, idx) => {
+      const max = i.subscription?.maxStudents ?? null;
+      return {
+        ...i,
+        card: cardByInstitute.get(i.id) || null,
+        activeStudentCount: activeCounts[idx],
+        overLimit: max !== null && activeCounts[idx] > max,
+        atLimit: max !== null && activeCounts[idx] >= max,
+      };
+    });
     res.json({ institutes: withCards, systemCard: systemCard || null });
   } catch (err) {
     next(err);
@@ -212,6 +225,11 @@ async function listAdvisorsOverview(req, res, next) {
         subscription: { select: { status: true, tier: true, endsAt: true } },
         // مبلغ ماهانه‌ی تعیین‌شده برای این مشاور (تومان)
         monthlyPrice: true,
+        // سقف دانش‌آموز فعال (فقط مشاور مستقل) + لینک دعوت + برنامه‌ی تخفیف
+        instituteId: true,
+        maxActiveStudents: true,
+        advisorInviteEnabled: true,
+        referralEnabled: true,
         asAdvisorLinks: {
           // فقط اتصال‌های ACTIVE — درخواست‌های PENDING هنوز دانش‌آموزِ مشاور نیستند
           // و نباید در فهرست دانش‌آموزان او نمایش داده شوند
@@ -223,6 +241,11 @@ async function listAdvisorsOverview(req, res, next) {
                 fullName: true,
                 email: true,
                 phone: true,
+                // برای شمارش «دانش‌آموز فعال» (حساب فعال + اشتراک معتبر)
+                role: true,
+                status: true,
+                subscription: true,
+                institute: { select: { subscription: true } },
               },
             },
           },
@@ -231,10 +254,24 @@ async function listAdvisorsOverview(req, res, next) {
       orderBy: { fullName: 'asc' },
     });
     res.json({
-      advisors: advisors.map((a) => ({
-        ...a,
-        fields: a.advisorFields.map((af) => af.field),
-      })),
+      advisors: advisors.map((a) => {
+        const activeStudentCount = a.asAdvisorLinks.filter((l) => isStudentCountable(l.student)).length;
+        // مشاور آموزشگاهی سقف شخصی ندارد؛ سقف روی آموزشگاه تنظیم می‌شود
+        const limit = a.instituteId ? null : a.maxActiveStudents;
+        return {
+          ...a,
+          // فقط فیلدهای لازم دانش‌آموز به پنل می‌رود (نه اشتراک خام)
+          asAdvisorLinks: a.asAdvisorLinks.map((l) => ({
+            student: { id: l.student.id, fullName: l.student.fullName, email: l.student.email, phone: l.student.phone },
+          })),
+          fields: a.advisorFields.map((af) => af.field),
+          activeStudentCount,
+          maxActiveStudents: limit,
+          // سقف پایین‌تر از تعداد فعلی: فقط هشدار (ورودی جدید بسته است، دانش‌آموزان فعلی دست‌نخورده)
+          overLimit: limit !== null && limit !== undefined && activeStudentCount > limit,
+          atLimit: limit !== null && limit !== undefined && activeStudentCount >= limit,
+        };
+      }),
     });
   } catch (err) {
     next(err);
@@ -720,7 +757,7 @@ async function createUserOtp(req, res, next) {
 // اینجا هم برگردد، وگرنه پنل بی‌صدا داده‌ی کهنه/خالی نشان می‌دهد.
 // (همین اتفاق برای subscription و monthlyPrice افتاد: select می‌خواند ولی در
 // پاسخ نمی‌آمد، برای همین تغییر اشتراک در پنل دیده نمی‌شد.)
-function toStudentOverview(s) {
+function toStudentOverview(s, extra = {}) {
   const activeLink = s.asStudentLinks.find((l) => l.status === 'ACTIVE');
   const pendingLink = s.asStudentLinks.find((l) => l.status === 'PENDING');
   return {
@@ -740,6 +777,12 @@ function toStudentOverview(s) {
     advisor: activeLink ? activeLink.advisor : null,
     pendingAdvisor: pendingLink ? pendingLink.advisor : null,
     linkCreatedAt: (activeLink || pendingLink)?.createdAt || null,
+    // نحوه‌ی ورود: DIRECT | ADVISOR_LINK | FRIEND_LINK (null برای حساب‌های قدیمی) + دعوت‌کننده
+    signupSource: s.signupSource || null,
+    signupInviter: extra.signupInviter || null,
+    // تخفیف دعوت: وضعیت رکورد دعوت‌شده + مجموع تخفیف فعال فعلی
+    referral: extra.referral || null,
+    discountPercent: extra.discountPercent || 0,
   };
 }
 
@@ -766,6 +809,8 @@ async function listStudentsOverview(req, res, next) {
         subscription: { select: { status: true, tier: true, endsAt: true } },
         // مبلغ ماهانه‌ی تعیین‌شده برای این دانش‌آموز (تومان)
         monthlyPrice: true,
+        signupSource: true,
+        signupInviterId: true,
         asStudentLinks: {
           select: {
             status: true,
@@ -777,7 +822,34 @@ async function listStudentsOverview(req, res, next) {
       orderBy: { createdAt: 'desc' },
     });
 
-    res.json({ students: students.map(toStudentOverview) });
+    // دعوت‌کننده‌ها (مشاور یا دانش‌آموز) و رکوردهای تخفیف — جدا وصل می‌شوند (بدون رابطه‌ی Prisma)
+    const inviterIds = [...new Set(students.map((st) => st.signupInviterId).filter(Boolean))];
+    const [inviters, referrals] = await Promise.all([
+      inviterIds.length
+        ? prisma.user.findMany({ where: { id: { in: inviterIds } }, select: { id: true, fullName: true, role: true } })
+        : [],
+      prisma.referral.findMany({
+        where: { OR: [{ inviteeId: { in: students.map((st) => st.id) } }, { inviterId: { in: students.map((st) => st.id) } }] },
+        select: { inviteeId: true, inviterId: true, status: true, drawnPercent: true, inviterPercent: true, inviteePercent: true, expiresAt: true },
+      }),
+    ]);
+    const inviterById = new Map(inviters.map((u) => [u.id, u]));
+    const referralByInvitee = new Map(referrals.map((r) => [r.inviteeId, r]));
+    const now = new Date();
+    const discountOf = (id) => Math.min(15, referrals.reduce((sum, r) => {
+      if (r.status !== 'ACTIVE' || !r.expiresAt || r.expiresAt <= now) return sum;
+      if (r.inviterId === id) return sum + (r.inviterPercent || 0);
+      if (r.inviteeId === id) return sum + (r.inviteePercent || 0);
+      return sum;
+    }, 0));
+
+    res.json({
+      students: students.map((st) => toStudentOverview(st, {
+        signupInviter: inviterById.get(st.signupInviterId) || null,
+        referral: referralByInvitee.get(st.id) || null,
+        discountPercent: discountOf(st.id),
+      })),
+    });
   } catch (err) {
     next(err);
   }
@@ -1135,7 +1207,71 @@ async function listAuditLogs(req, res, next) {
   }
 }
 
+// ====== سقف دانش‌آموز فعال مشاور (فقط مشاور مستقل) ======
+// body: { maxActiveStudents: number|null } — null یعنی بدون سقف.
+// سقف فقط ورودی جدید را می‌بندد؛ اگر کمتر از تعداد فعلی تنظیم شود دانش‌آموزان فعلی دست‌نخورده
+// می‌مانند و پاسخ شامل هشدار است (ترکیب «ورودی بسته + هشدار به سوپرادمین»).
+async function setAdvisorStudentLimit(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { maxActiveStudents } = req.body;
+    const advisor = await prisma.user.findFirst({ where: { id, role: { in: ['ADVISOR', 'SUPERADMIN'] } } });
+    if (!advisor) return res.status(404).json({ error: 'مشاور یافت نشد' });
+    if (advisor.role === 'SUPERADMIN') {
+      return res.status(400).json({ error: 'برای سوپرادمین سقفی تعریف نمی‌شود' });
+    }
+    if (advisor.instituteId) {
+      return res.status(400).json({
+        error: 'این مشاور عضو آموزشگاه است و سقف شخصی ندارد؛ سقف را روی خودِ آموزشگاه تنظیم کن.',
+      });
+    }
+    await prisma.user.update({ where: { id }, data: { maxActiveStudents } });
+    const count = await countActiveStudentsOfAdvisor(id);
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'ADVISOR_STUDENT_LIMIT_SET',
+      targetType: 'USER',
+      targetId: id,
+      details: { label: advisor.fullName, before: advisor.maxActiveStudents, after: maxActiveStudents, activeStudentCount: count },
+    });
+    const over = maxActiveStudents !== null && count > maxActiveStudents;
+    res.json({
+      message: maxActiveStudents === null ? 'سقف دانش‌آموز این مشاور برداشته شد' : 'سقف دانش‌آموز فعال این مشاور به‌روزرسانی شد',
+      maxActiveStudents,
+      activeStudentCount: count,
+      overLimit: over,
+      warning: over
+        ? `این مشاور هم‌اکنون ${count} دانش‌آموز فعال دارد که از سقف (${maxActiveStudents}) بیشتر است. دانش‌آموزان فعلی دست‌نخورده می‌مانند و فقط پذیرش دانش‌آموز جدید بسته است.`
+        : null,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// روشن/خاموش‌کردن برنامه‌ی تخفیف دعوت برای یک آموزشگاه — body: { enabled: boolean }
+async function setInstituteReferral(req, res, next) {
+  try {
+    const { id } = req.params;
+    if (typeof req.body.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'مقدار enabled باید درست/نادرست باشد' });
+    }
+    const inst = await prisma.institute.findUnique({ where: { id } });
+    if (!inst) return res.status(404).json({ error: 'مؤسسه یافت نشد' });
+    await prisma.institute.update({ where: { id }, data: { referralEnabled: req.body.enabled } });
+    await writeAuditLog({
+      actorId: req.user.id, action: 'INSTITUTE_REFERRAL_SET', targetType: 'INSTITUTE', targetId: id,
+      details: { label: inst.name, before: inst.referralEnabled, after: req.body.enabled },
+    });
+    res.json({ referralEnabled: req.body.enabled });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
+  setAdvisorStudentLimit,
+  setInstituteReferral,
   toStudentOverview,
   listPendingAdvisors,
   approveAdvisor,

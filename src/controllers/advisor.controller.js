@@ -1,5 +1,6 @@
 const prisma = require('../config/prisma');
 const { pruneAdvisorStudentLinks } = require('../utils/orphans');
+const { getAdvisorRoom } = require('../utils/capacity');
 
 // این فهرست بدون نیاز به ورود در دسترس است، چون دانش‌آموز باید قبل از ثبت‌نام مشاورش را انتخاب کند.
 // پارامترهای query:
@@ -193,6 +194,11 @@ async function acceptStudentRequest(req, res, next) {
     });
     if (!link) {
       return res.status(404).json({ error: 'درخواست یافت نشد یا قبلاً تصمیم گرفته شده' });
+    }
+    // سقف دانش‌آموز فعال: مشاور مستقل → سقف شخصی؛ مشاور آموزشگاهی → سقف آموزشگاه
+    const room = await getAdvisorRoom(req.user);
+    if (!room.ok) {
+      return res.status(403).json({ error: room.error, code: 'CAPACITY_FULL' });
     }
     await prisma.advisorStudentLink.update({
       where: { id },

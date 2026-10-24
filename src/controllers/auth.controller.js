@@ -6,6 +6,10 @@ const { generateToken, setTokenCookie, clearTokenCookie } = require('../utils/jw
 const { normalizePhone, normalizeBio, validatePassword } = require('../utils/normalizers');
 const { sendPasswordResetEmail, sendOtpEmail } = require('../utils/mailer');
 const { remainingInstituteCapacity, CAPACITY_ERROR } = require('../utils/subscription');
+const { getAdvisorRoom, countActiveStudentsOfInstitute } = require('../utils/capacity');
+const { normalizeInviteCode } = require('../utils/inviteCode');
+const { resolveInviteCode } = require('./invite.controller');
+const { createReferral, isReferralEnabledForAdvisor } = require('../utils/referral');
 
 const SALT_ROUNDS = 10;
 const RESET_TOKEN_BYTES = 32;
@@ -27,7 +31,7 @@ async function isRegistrationComplete(user) {
   if (user.role === 'INSTITUTE_MANAGER') return true;
   if (user.role === 'STUDENT') return !!user.field;
   if (user.role === 'ADVISOR') {
-    const count = await prisma.advisorField.count({ where: { advisorId: user.id } });
+    const count = await prisma.advisorField.count({ where: { userId: user.id } });
     return count > 0;
   }
   return true;
@@ -57,7 +61,7 @@ const otpLastRequestAt = new Map();
 //   ۳) link با مشاور PENDING ساخته می‌شود
 async function register(req, res, next) {
   try {
-    const { fullName, email, password, role, advisorId, phone, bio, field, fields, instituteId, instituteCode, parentInviteCode } = req.body;
+    const { fullName, email, password, role, advisorId, phone, bio, field, fields, instituteId, instituteCode, parentInviteCode, inviteCode } = req.body;
 
     // ثبت‌نام مینیمال — همه‌ی نقش‌ها فقط شماره تماس + رمز می‌دهند؛ بقیه‌ی مشخصات
     // بعد از ورود، داخل پنل تکمیل می‌شود. شماره برای همه الزامی است: والد با آن
@@ -172,9 +176,31 @@ async function register(req, res, next) {
       });
     }
 
+    // --- ثبت‌نام با لینک دعوت (مشاور یا دوست) — فقط دانش‌آموز ---
+    // دانش‌آموز مستقیم و بدون تأیید و بدون انتخاب مشاور به مشاورِ لینک وصل می‌شود.
+    let invite = null;
+    if (inviteCode) {
+      if (role !== 'STUDENT') {
+        return res.status(400).json({ error: 'لینک دعوت فقط برای ثبت‌نام دانش‌آموز است' });
+      }
+      const code = normalizeInviteCode(inviteCode);
+      invite = code ? await resolveInviteCode(code) : null;
+      if (!invite) {
+        return res.status(400).json({
+          error: 'این لینک دعوت معتبر نیست یا غیرفعال شده است. از مشاورت لینک تازه بگیر.',
+          code: 'INVITE_INVALID',
+        });
+      }
+    }
+
     // عضویت اختیاری در مؤسسه
     let institute = null;
-    if (instituteId) {
+    if (invite) {
+      // مؤسسه همان مؤسسه‌ی مشاور است (قانون مرز مؤسسه: مشاور و دانش‌آموز هم‌مؤسسه‌اند)
+      if (invite.advisor.instituteId) {
+        institute = await prisma.institute.findUnique({ where: { id: invite.advisor.instituteId } });
+      }
+    } else if (instituteId) {
       institute = await prisma.institute.findUnique({ where: { id: instituteId } });
       if (!institute) {
         return res.status(400).json({ error: 'مؤسسه‌ی انتخاب‌شده یافت نشد' });
@@ -191,10 +217,19 @@ async function register(req, res, next) {
 
     // --- محدودیت ظرفیت مؤسسه ---
     // اگر تعداد مشاور/دانش‌آموز مؤسسه به سقف اشتراکش رسیده باشد، عضو جدید پذیرفته نمی‌شود.
-    if (institute) {
+    if (invite) {
+      // ظرفیت مشاور مستقل (سقف شخصی) یا مؤسسه‌ی او (سقف مؤسسه) — یک‌جا از getAdvisorRoom
+      const room = await getAdvisorRoom(invite.advisor);
+      if (!room.ok) {
+        return res.status(403).json({ error: room.error, code: 'CAPACITY_FULL' });
+      }
+    } else if (institute) {
       const [sub, currentCount] = await Promise.all([
         prisma.instituteSubscription.findUnique({ where: { instituteId: institute.id } }),
-        prisma.user.count({ where: { instituteId: institute.id, role } }),
+        // دانش‌آموز: «فعال» به تعریف ظرفیت (حساب فعال + اتصال فعال + اشتراک معتبر)
+        role === 'STUDENT'
+          ? countActiveStudentsOfInstitute(institute.id)
+          : prisma.user.count({ where: { instituteId: institute.id, role } }),
       ]);
       const capacity = remainingInstituteCapacity(sub, role, currentCount);
       if (!capacity.ok) {
@@ -207,7 +242,7 @@ async function register(req, res, next) {
     //   + مرز مؤسسه: مشاور و دانش‌آموز باید هم‌مؤسسه باشند یا هر دو مستقل
     //   + مشاور باید رشته‌ی دانش‌آموز را در تخصص‌هایش داشته باشد
     let advisor = null;
-    if (role === 'STUDENT' && advisorId) {
+    if (role === 'STUDENT' && advisorId && !invite) {
       // سوپرادمین هم می‌تواند مشاور باشد (در فهرست مشاوران مستقل نمایش داده می‌شود)
       advisor = await prisma.user.findFirst({
         where: { id: advisorId, role: { in: ['ADVISOR', 'SUPERADMIN'] }, status: 'ACTIVE' },
@@ -239,7 +274,8 @@ async function register(req, res, next) {
     const passwordHash = await bcrypt.hash(passwordValue, SALT_ROUNDS);
 
     // والد فوراً فعال می‌شود — چیزی برای تأیید ندارد؛ دسترسی‌اش با اتصال به فرزند معنا پیدا می‌کند
-    const status = role === 'PARENT' || (role === 'STUDENT' && !institute) ? 'ACTIVE' : 'PENDING';
+    // ثبت‌نام با لینک دعوت نیاز به تأیید ندارد (مشاور خودش دعوت کرده)؛ بقیه مثل قبل.
+    const status = invite || role === 'PARENT' || (role === 'STUDENT' && !institute) ? 'ACTIVE' : 'PENDING';
 
     // ساخت کاربر + رشته‌های تخصص مشاور (اگر مشاور است) + اشتراک آزمایشی در یک تراکنش
     // (به ثبت‌نام‌های جدید ۱۴ روز TRIAL داده می‌شود تا چرخه‌ی واریز از روز اول معنا داشته باشد)
@@ -254,6 +290,11 @@ async function register(req, res, next) {
         bio: bioValue,
         field: role === 'STUDENT' ? studentField : null,
         instituteId: institute ? institute.id : null,
+        // نحوه‌ی ورود دانش‌آموز — در پنل سوپرادمین نمایش داده می‌شود
+        signupSource: role === 'STUDENT'
+          ? (invite ? (invite.kind === 'ADVISOR' ? 'ADVISOR_LINK' : 'FRIEND_LINK') : 'DIRECT')
+          : null,
+        signupInviterId: invite ? invite.inviter.id : null,
         subscription: {
           create: {
             status: 'TRIAL',
@@ -266,7 +307,22 @@ async function register(req, res, next) {
       },
     });
 
-    if (role === 'STUDENT' && advisor) {
+    if (role === 'STUDENT' && invite) {
+      // اتصال مستقیم و فعال به مشاورِ لینک
+      await prisma.advisorStudentLink.create({
+        data: { advisorId: invite.advisor.id, studentId: user.id, status: 'ACTIVE' },
+      });
+      // لینک دوست: قرعه‌ی تخفیف (فعال‌سازی بعد از اولین پرداخت تأییدشده)
+      if (invite.kind === 'FRIEND') {
+        try {
+          if (await isReferralEnabledForAdvisor(invite.advisor.id)) {
+            await createReferral(invite.inviter.id, user.id);
+          }
+        } catch (err) {
+          console.error('[referral] create failed:', err.message);
+        }
+      }
+    } else if (role === 'STUDENT' && advisor) {
       await prisma.advisorStudentLink.create({
         data: { advisorId: advisor.id, studentId: user.id, status: 'PENDING' },
       });
@@ -321,7 +377,9 @@ async function register(req, res, next) {
           ? childName
             ? `ثبت‌نام انجام شد و به «${childName}» وصل شدی`
             : 'ثبت‌نام انجام شد. با کد دعوت فرزندت از پنل خودت وصل شو'
-          : 'ثبت‌نام انجام شد',
+          : invite
+            ? `ثبت‌نام انجام شد و به مشاورت «${invite.advisor.fullName}» وصل شدی`
+            : 'ثبت‌نام انجام شد',
         user: { id: user.id, fullName: user.fullName, role: user.role, field: user.field },
         registrationComplete,
       });
@@ -544,7 +602,7 @@ async function getMe(req, res) {
   let advisorFields = null;
   if (req.user.role === 'ADVISOR') {
     const afRows = await prisma.advisorField.findMany({
-      where: { advisorId: req.user.id },
+      where: { userId: req.user.id },
       select: { field: true },
     });
     advisorFields = afRows.map((af) => af.field);
@@ -629,10 +687,10 @@ async function updateMyProfile(req, res, next) {
       }
       // تراکنش: پاک‌کردن قبلی‌ها + نوشتن جدیدها (آرایه‌ی خالی یعنی پاک‌کردن)
       await prisma.$transaction([
-        prisma.advisorField.deleteMany({ where: { advisorId: req.user.id } }),
+        prisma.advisorField.deleteMany({ where: { userId: req.user.id } }),
         ...(fieldsArray.length > 0
           ? [prisma.advisorField.createMany({
-              data: fieldsArray.map((f) => ({ advisorId: req.user.id, field: f })),
+              data: fieldsArray.map((f) => ({ userId: req.user.id, field: f })),
             })]
           : []),
       ]);
@@ -658,7 +716,9 @@ async function updateMyProfile(req, res, next) {
         }
         const [sub, currentCount] = await Promise.all([
           prisma.instituteSubscription.findUnique({ where: { instituteId: inst.id } }),
-          prisma.user.count({ where: { instituteId: inst.id, role } }),
+          role === 'STUDENT'
+            ? countActiveStudentsOfInstitute(inst.id)
+            : prisma.user.count({ where: { instituteId: inst.id, role } }),
         ]);
         const capacity = remainingInstituteCapacity(sub, role, currentCount);
         if (!capacity.ok) {
@@ -742,7 +802,7 @@ async function updateMyProfile(req, res, next) {
       updatedFields = [...new Set(Array.isArray(fields) ? fields : [])];
     } else if (role === 'ADVISOR') {
       const afRows = await prisma.advisorField.findMany({
-        where: { advisorId: req.user.id },
+        where: { userId: req.user.id },
         select: { field: true },
       });
       updatedFields = afRows.map((af) => af.field);

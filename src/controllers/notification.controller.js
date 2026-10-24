@@ -11,6 +11,7 @@ async function getSummary(req, res, next) {
       prisma.studyPlan.count({
         where: {
           studentId: req.user.id,
+          isDraft: false,
           startsAt: { lte: now },
           OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
           updatedAt: { gt: lastViewed },

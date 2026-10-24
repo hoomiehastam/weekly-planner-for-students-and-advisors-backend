@@ -58,6 +58,9 @@ const registerSchema = z.object({
   // ثبت‌نام والد: کد دعوت فرزند (اختیاری — بعداً هم قابل اتصال است)
   parentInviteCode: z.string().trim().min(8).max(8)
     .regex(/^[A-Z0-9]+$/, 'کد دعوت نامعتبر است').optional(),
+  // ثبت‌نام دانش‌آموز با لینک دعوت مشاور یا دوست (اتصال مستقیم، بدون تأیید)
+  inviteCode: z.string().trim().min(6, 'کد دعوت نامعتبر است').max(20, 'کد دعوت نامعتبر است')
+    .regex(/^[A-Za-z0-9]+$/, 'کد دعوت نامعتبر است').optional(),
 });
 
 // ورود با «ایمیل یا شماره تماس» — فیلد email هم مقدار ایمیل می‌گیرد هم شماره تماس؛
@@ -219,6 +222,32 @@ const parentJoinSchema = z.object({
     .regex(/^[A-Z0-9]+$/, 'کد دعوت نامعتبر است'),
 });
 
+// یادداشت خصوصی مشاور درباره‌ی دانش‌آموز
+const noteSchema = z.object({
+  content: z.string().trim().min(1, 'متن یادداشت خالی است').max(4000, 'یادداشت نباید بیشتر از ۴۰۰۰ نویسه باشد'),
+});
+
+// تنظیمات لینک دعوت مشاور
+const advisorInviteSettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  referralEnabled: z.boolean().optional(),
+  regenerate: z.boolean().optional(),
+});
+
+// سقف دانش‌آموز فعال مشاور — null یعنی بدون سقف
+const advisorStudentLimitSchema = z.object({
+  maxActiveStudents: z.number().int().min(0).max(100000).nullable(),
+});
+
+// ساخت پیش‌نویس برنامه از بازه‌ی امتحان‌ها
+const examDraftSchema = z.object({
+  studentId: idSchema,
+  from: z.string().trim().min(8).max(40),
+  to: z.string().trim().min(8).max(40),
+  eventIds: z.array(idSchema).max(200).optional(),
+  sessionMinutes: z.number().int().min(30).max(240).optional(),
+});
+
 // ورود با کد یک‌بارمصرف ایمیلی — کد جای رمز عبور می‌نشیند
 const otpLoginSchema = z.object({
   email: emailSchema,
@@ -265,5 +294,9 @@ module.exports = {
     assignAdvisorFields: assignAdvisorFieldsSchema,
     setLeader: setLeaderSchema,
     createOtp: createOtpSchema,
+    note: noteSchema,
+    advisorInviteSettings: advisorInviteSettingsSchema,
+    advisorStudentLimit: advisorStudentLimitSchema,
+    examDraft: examDraftSchema,
   },
 };

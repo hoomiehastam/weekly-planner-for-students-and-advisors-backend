@@ -28,6 +28,8 @@ const {
   updateInstituteMonthlyPrice,
   setCardSettings,
   listAuditLogs,
+  setAdvisorStudentLimit,
+  setInstituteReferral,
 } = require('../controllers/admin.controller');
 const { validate, schemas } = require('../utils/validators');
 
@@ -44,6 +46,11 @@ router.put('/advisors/:id/institute', validate(schemas.assignInstitute), assignA
 
 // تخصیص/ویرایش رشته‌های تخصص مشاور
 router.put('/advisors/:id/fields', validate(schemas.assignAdvisorFields), assignAdvisorFields);
+
+// سقف دانش‌آموز فعال مشاور مستقل — body: { maxActiveStudents: number|null }
+router.put('/advisors/:id/student-limit', validate(schemas.advisorStudentLimit), setAdvisorStudentLimit);
+// روشن/خاموش‌کردن تخفیف دعوت برای یک آموزشگاه — body: { enabled }
+router.put('/institutes/:id/referral', setInstituteReferral);
 
 // غیرفعال‌کردن / فعال‌کردن مجدد / حذف مشاور
 router.post('/advisors/:id/deactivate', deactivateAdvisor);

@@ -102,6 +102,8 @@ async function pruneOrphanRows() {
     ['DepositRequest', 'DELETE d FROM `DepositRequest` d LEFT JOIN `User` p ON p.`id` = d.`payerId` LEFT JOIN `User` o ON o.`id` = d.`ownerId` WHERE p.`id` IS NULL OR o.`id` IS NULL'],
     ['PasswordReset', 'DELETE r FROM `PasswordReset` r LEFT JOIN `User` u ON u.`id` = r.`userId` WHERE r.`userId` IS NOT NULL AND u.`id` IS NULL'],
     ['InstituteSubscription', 'DELETE b FROM `InstituteSubscription` b LEFT JOIN `Institute` i ON i.`id` = b.`instituteId` WHERE i.`id` IS NULL'],
+    ['StudentNote', 'DELETE n FROM `StudentNote` n LEFT JOIN `User` a ON a.`id` = n.`advisorId` LEFT JOIN `User` s ON s.`id` = n.`studentId` WHERE a.`id` IS NULL OR s.`id` IS NULL'],
+    ['Referral', 'DELETE r FROM `Referral` r LEFT JOIN `User` a ON a.`id` = r.`inviterId` LEFT JOIN `User` b ON b.`id` = r.`inviteeId` WHERE a.`id` IS NULL OR b.`id` IS NULL'],
     ['AuditLog', 'DELETE a FROM `AuditLog` a LEFT JOIN `User` u ON u.`id` = a.`actorId` WHERE a.`actorId` IS NOT NULL AND u.`id` IS NULL'],
   ];
 
@@ -152,6 +154,8 @@ async function deleteUserRelatedRows(client, userId) {
   await c.studyPlan.deleteMany({ where: planWhere });
 
   // --- بقیه‌ی وابسته‌ها ---
+  await c.studentNote.deleteMany({ where: { OR: [{ advisorId: userId }, { studentId: userId }] } });
+  await c.referral.deleteMany({ where: { OR: [{ inviterId: userId }, { inviteeId: userId }] } });
   await c.reminder.deleteMany({ where: { OR: [{ advisorId: userId }, { studentId: userId }] } });
   await c.tag.deleteMany({ where: { advisorId: userId } });
   await c.advisorField.deleteMany({ where: { userId } });

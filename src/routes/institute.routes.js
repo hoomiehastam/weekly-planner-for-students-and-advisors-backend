@@ -9,6 +9,7 @@ const {
   rejectMember,
   removeMember,
   assignStudentAdvisor,
+  setReferralEnabled,
 } = require('../controllers/institute.controller');
 
 // همه‌ی مسیرهای مدیر مؤسسه — اسکوپ از req.user.instituteId (هرگز از کلاینت)
@@ -23,5 +24,7 @@ router.put('/members/:id/reject', rejectMember);
 router.delete('/members/:id', removeMember);
 // انتخاب/تغییر مشاور یک دانش‌آموز مؤسسه توسط مدیر — body: { advisorId }
 router.put('/students/:id/advisor', assignStudentAdvisor);
+// برنامه‌ی تخفیف دعوت دانش‌آموزان مؤسسه — body: { enabled }
+router.put('/referral', setReferralEnabled);
 
 module.exports = router;

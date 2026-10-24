@@ -1,4 +1,5 @@
 const prisma = require('../config/prisma');
+const { buildExamDrafts } = require('../utils/examDraft');
 
 // این کنترلر همه‌ی عملیات مربوط به برنامه‌ی مطالعاتی را مدیریت می‌کند:
 // ساخت، ویرایش کامل، مشاهده، و تغییر وضعیت آیتم‌ها.
@@ -227,7 +228,7 @@ async function replaceDays(tx, { planId, advisorId, days }) {
 //   { studentId, title, note?, startsAt, expiresAt?, days: [{ dayOfWeek, items: [{ subject, chapter?, section?, description?, startTime?, endTime?, tags: [tagId] }] }] }
 async function createPlan(req, res, next) {
   try {
-    const { studentId, title, note, startsAt, expiresAt, days = [] } = req.body;
+    const { studentId, title, note, startsAt, expiresAt, days = [], isDraft } = req.body;
 
     if (!studentId || !title || !startsAt) {
       return res.status(400).json({ error: 'شناسه‌ی دانش‌آموز، عنوان و تاریخ شروع الزامی هستند' });
@@ -271,6 +272,7 @@ async function createPlan(req, res, next) {
         advisorId: req.user.id,
         startsAt: new Date(startsAt),
         expiresAt: expiresAt ? new Date(expiresAt) : null,
+        isDraft: isDraft === true,
         days: {
           create: days.map((d) => ({
             dayOfWeek: validateDayOfWeek(d.dayOfWeek),
@@ -297,7 +299,7 @@ async function createPlan(req, res, next) {
 async function updatePlan(req, res, next) {
   try {
     const { id } = req.params;
-    const { title, note, startsAt, expiresAt, days } = req.body;
+    const { title, note, startsAt, expiresAt, days, isDraft } = req.body;
 
     const existing = await prisma.studyPlan.findUnique({ where: { id } });
     if (!existing) {
@@ -314,6 +316,8 @@ async function updatePlan(req, res, next) {
       updatedPlanFields.title = t;
     }
     if (note !== undefined) updatedPlanFields.note = note ? String(note).trim() : null;
+    // انتشار پیش‌نویس: isDraft=false (updatedAt هم عوض می‌شود تا اعلان «به‌روزرسانی» برای دانش‌آموز بیاید)
+    if (typeof isDraft === 'boolean') updatedPlanFields.isDraft = isDraft;
     if (startsAt !== undefined) updatedPlanFields.startsAt = new Date(startsAt);
     if (expiresAt !== undefined) {
       updatedPlanFields.expiresAt = expiresAt ? new Date(expiresAt) : null;
@@ -344,6 +348,7 @@ async function getMyPlans(req, res, next) {
     const plans = await prisma.studyPlan.findMany({
       where: {
         studentId: req.user.id,
+        isDraft: false,
         startsAt: { lte: now },
         OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
       },
@@ -606,7 +611,89 @@ async function deleteItemTagLog(req, res, next) {
   }
 }
 
+// ====== ساخت پیش‌نویس برنامه از بازه‌ی امتحان‌ها ======
+// body: { studentId, from, to, eventIds?, sessionMinutes? }
+// امتحان‌های ثبت‌شده‌ی دانش‌آموز در بازه (یا فقط eventIds انتخاب‌شده) را به بلوک‌های مطالعه تبدیل می‌کند و
+// برای هر هفته‌ی شمسی یک «پیش‌نویس» می‌سازد؛ مشاور بازبینی/ویرایش می‌کند و بعد منتشر می‌کند.
+async function createExamDrafts(req, res, next) {
+  try {
+    const { studentId, from, to, eventIds, sessionMinutes = 90 } = req.body;
+
+    const link = await prisma.advisorStudentLink.findFirst({
+      where: { advisorId: req.user.id, studentId, status: 'ACTIVE' },
+    });
+    if (!link) {
+      return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست یا هنوز تأیید نشده' });
+    }
+
+    const fromDate = new Date(from);
+    const toDate = new Date(to);
+    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+      return res.status(400).json({ error: 'بازه‌ی تاریخ نامعتبر است' });
+    }
+
+    // پنجره‌ی کمی بازتر می‌گیریم و دقیقِ روز را در سازنده (به وقت تهران) فیلتر می‌کنیم
+    const events = await prisma.studentExamEvent.findMany({
+      where: {
+        studentId,
+        dueAt: {
+          gte: new Date(fromDate.getTime() - 2 * 86400000),
+          lte: new Date(toDate.getTime() + 2 * 86400000),
+        },
+        ...(Array.isArray(eventIds) && eventIds.length > 0 ? { id: { in: eventIds } } : {}),
+      },
+    });
+
+    const examTag = await prisma.tag.findFirst({ where: { isDefault: true, name: 'آمادگی امتحان' }, select: { id: true } });
+
+    let built;
+    try {
+      built = buildExamDrafts({
+        events, from: fromDate, to: toDate, sessionMinutes, defaultTagId: examTag ? examTag.id : null,
+      });
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+    if (built.weeks.length === 0) {
+      return res.status(400).json({
+        error: built.eventCount === 0 && events.length === 0
+          ? 'در این بازه امتحان یا پرسشی ثبت نشده است'
+          : 'برای امتحان‌های این بازه روزی قبل از امتحان پیدا نشد؛ بازه را زودتر شروع کن',
+        warnings: built.warnings,
+      });
+    }
+
+    const plans = await prisma.$transaction(
+      built.weeks.map((w) => prisma.studyPlan.create({
+        data: {
+          title: w.total > 1
+            ? `آمادگی امتحان‌ها — هفته‌ی ${w.index} از ${w.total}`
+            : 'آمادگی امتحان‌ها',
+          note: `پیش‌نویس خودکار از برنامه‌ی امتحان‌های دانش‌آموز: ${w.eventTitles.join('، ')}`,
+          studentId,
+          advisorId: req.user.id,
+          startsAt: w.startsAt,
+          expiresAt: w.expiresAt,
+          isDraft: true,
+          days: {
+            create: w.days.map((d) => ({
+              dayOfWeek: d.dayOfWeek,
+              items: { create: d.items.map((it, idx) => itemCreateData(toItemInput(it, idx))) },
+            })),
+          },
+        },
+        include: PLAN_INCLUDE,
+      }))
+    );
+
+    res.status(201).json({ plans, warnings: built.warnings, eventCount: built.eventCount });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
+  createExamDrafts,
   createPlan,
   updatePlan,
   getMyPlans,

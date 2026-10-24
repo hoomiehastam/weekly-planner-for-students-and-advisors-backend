@@ -1,5 +1,6 @@
 const prisma = require('../config/prisma');
 const { remainingInstituteCapacity, CAPACITY_ERROR } = require('../utils/subscription');
+const { countActiveStudentsOfInstitute, getAdvisorRoom } = require('../utils/capacity');
 const { pruneAdvisorStudentLinks } = require('../utils/orphans');
 
 // ====== کنترلرهای مدیر مؤسسه (و «نماینده/سردار» تعیین‌شده توسط سوپرادمین) ======
@@ -19,6 +20,7 @@ async function getInstituteMe(req, res, next) {
         code: true,
         status: true,
         createdAt: true,
+        referralEnabled: true,
         subscription: {
           select: { status: true, tier: true, endsAt: true, maxAdvisors: true, maxStudents: true },
         },
@@ -30,7 +32,8 @@ async function getInstituteMe(req, res, next) {
 
     const [advisorCount, studentCount, pendingCount] = await Promise.all([
       prisma.user.count({ where: { instituteId: req.instituteId, role: 'ADVISOR' } }),
-      prisma.user.count({ where: { instituteId: req.instituteId, role: 'STUDENT' } }),
+      // دانش‌آموز «فعال» = حساب فعال + اتصال فعال + اشتراک معتبر (مبنای سقف)
+      countActiveStudentsOfInstitute(req.instituteId),
       prisma.user.count({
         where: { instituteId: req.instituteId, status: 'PENDING', role: { in: ['ADVISOR', 'STUDENT'] } },
       }),
@@ -124,7 +127,9 @@ async function approveMember(req, res, next) {
     // --- محدودیت ظرفیت: تأیید عضو جدید نباید سقف اشتراک را رد کند ---
     const [sub, currentCount] = await Promise.all([
       prisma.instituteSubscription.findUnique({ where: { instituteId: req.instituteId } }),
-      prisma.user.count({ where: { instituteId: req.instituteId, role: member.role } }),
+      member.role === 'STUDENT'
+        ? countActiveStudentsOfInstitute(req.instituteId)
+        : prisma.user.count({ where: { instituteId: req.instituteId, role: member.role } }),
     ]);
     const capacity = remainingInstituteCapacity(sub, member.role, currentCount);
     if (!capacity.ok) {
@@ -262,6 +267,15 @@ async function assignStudentAdvisor(req, res, next) {
     if (!advisor) return res.status(400).json({ error: 'مشاور انتخابی باید عضو فعال همین مؤسسه باشد' });
     if (advisor.id === student.id) return res.status(400).json({ error: 'نقش مشاور و دانش‌آموز متفاوت‌اند' });
 
+    // ظرفیت آموزشگاه: فقط وقتی دانش‌آموز تازه «فعال» می‌شود (قبلاً مشاور فعال نداشته) چک می‌شود
+    const hadActive = await prisma.advisorStudentLink.findFirst({
+      where: { studentId: student.id, status: 'ACTIVE' }, select: { id: true },
+    });
+    if (!hadActive) {
+      const room = await getAdvisorRoom({ id: advisor.id, role: 'ADVISOR', instituteId: req.instituteId });
+      if (!room.ok) return res.status(403).json({ error: room.error, code: 'CAPACITY_FULL' });
+    }
+
     // لینک‌های قبلی دانش‌آموز (هر وضعیتی) با مؤسسه‌ی مشاور جدید بسته می‌شوند تا یک لینک فعال بماند
     const result = await prisma.$transaction(async (tx) => {
       // اگر دقیقاً همین لینک ACTIVE وجود دارد، کاری نکن
@@ -291,7 +305,21 @@ async function assignStudentAdvisor(req, res, next) {
   }
 }
 
+// روشن/خاموش‌کردن برنامه‌ی تخفیف دعوت برای دانش‌آموزان مؤسسه — body: { enabled: boolean }
+async function setReferralEnabled(req, res, next) {
+  try {
+    if (typeof req.body.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'مقدار enabled باید درست/نادرست باشد' });
+    }
+    await prisma.institute.update({ where: { id: req.instituteId }, data: { referralEnabled: req.body.enabled } });
+    res.json({ referralEnabled: req.body.enabled });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
+  setReferralEnabled,
   getInstituteMe,
   listInstituteAdvisors,
   listInstituteStudents,

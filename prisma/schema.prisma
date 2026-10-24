@@ -113,6 +113,8 @@ model Institute {
   // role کاربر تغییر نمی‌کند؛ فقط همین اشاره‌گر اختیارات می‌دهد (middleware چک می‌کند).
   leaderId     String?
   leader       User?                  @relation("InstituteLeader", fields: [leaderId], references: [id], onDelete: SetNull)
+  // برنامه‌ی تخفیف دعوت برای دانش‌آموزان این مؤسسه (سوپرادمین/مدیر می‌تواند خاموشش کند)
+  referralEnabled Boolean @default(true)
 }
 
 // پیوند اشتراک ماهانه‌ی مؤسسه — خود مؤسسه پرداخت می‌کند، نه اعضا
@@ -341,6 +343,37 @@ model User {
   // null یعنی قیمت خاصی تعیین نشده — تأییدکننده مدت را دستی وارد می‌کند.
   monthlyPrice Int?
 
+  // --- سقف دانش‌آموز فعال (فقط مشاور مستقل؛ null یعنی بدون سقف) ---
+  // «فعال» یعنی: حساب دانش‌آموز ACTIVE + اتصال او به مشاور ACTIVE + اشتراک معتبر.
+  // مشاور عضو آموزشگاه سقف شخصی ندارد؛ فقط سقف آموزشگاه (InstituteSubscription.maxStudents) اعمال می‌شود.
+  maxActiveStudents Int?
+
+  // --- لینک دعوت مشاور برای دانش‌آموز ---
+  // یک کد ثابت و چندبارمصرف؛ ثبت‌نام با آن، دانش‌آموز را بدون تأیید و بدون انتخاب مشاور
+  // مستقیم به همین مشاور وصل می‌کند. مشاور می‌تواند آن را غیرفعال یا بازسازی کند.
+  advisorInviteCode    String? @unique @db.VarChar(40)
+  advisorInviteEnabled Boolean @default(true)
+
+  // --- لینک دعوت دوست (دانش‌آموز → دانش‌آموز) برای تخفیف شهریه ---
+  studentInviteCode String? @unique @db.VarChar(40)
+
+  // --- منبع ثبت‌نام (برای نمایش در پنل سوپرادمین) ---
+  // DIRECT | ADVISOR_LINK | FRIEND_LINK ؛ signupInviterId = مشاور یا دانش‌آموز دعوت‌کننده
+  signupSource    String? @db.VarChar(20)
+  signupInviterId String? @db.VarChar(100)
+
+  // --- برنامه‌ی تخفیف دعوت دانش‌آموزان این مشاور ---
+  // مشاور می‌تواند آن را برای دانش‌آموزان خودش خاموش کند (هزینه‌ی تخفیف با خود اوست).
+  referralEnabled Boolean @default(true)
+
+  // یادداشت‌های خصوصی مشاور درباره‌ی دانش‌آموزان (هرگز برای دانش‌آموز/والد برنمی‌گردد)
+  notesWritten StudentNote[] @relation("NoteAdvisor")
+  notesAbout   StudentNote[] @relation("NoteStudent")
+
+  // تخفیف‌های دعوت: به‌عنوان دعوت‌کننده / به‌عنوان دعوت‌شده
+  referralsMade    Referral[] @relation("ReferralInviter")
+  referralReceived Referral?  @relation("ReferralInvitee")
+
   // --- اشتراک و پرداخت ---
   // اشتراک فردی کاربر (مشاور مستقل / دانش‌آموز) — برای سوپرادمین ساخته نمی‌شود
   subscription      UserSubscription?
@@ -472,6 +505,9 @@ model StudyPlan {
   // بازه‌ی زمانی برنامه
   startsAt  DateTime
   expiresAt DateTime?
+  // پیش‌نویس: تا وقتی مشاور منتشرش نکرده، برای دانش‌آموز/والد/اعلان‌ها دیده نمی‌شود
+  // (برنامه‌های ساخته‌شده از «بازه‌ی امتحان‌ها» پیش‌نویس‌اند)
+  isDraft   Boolean   @default(false)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
@@ -772,4 +808,47 @@ model StudentExamEvent {
   student User @relation("StudentExamEventStudent", fields: [studentId], references: [id], onDelete: Cascade)
 
   @@index([studentId, dueAt])
+}
+
+
+// ====== یادداشت خصوصی مشاور درباره‌ی دانش‌آموز ======
+// فقط نویسنده‌ی یادداشت (مشاور یا سوپرادمین در نقش مشاور) می‌خواند؛ هیچ مسیری برای
+// دانش‌آموز، والد، مدیر مؤسسه یا مشاور دیگر ندارد.
+model StudentNote {
+  id        String   @id @default(cuid())
+  advisorId String   @db.VarChar(100)
+  studentId String   @db.VarChar(100)
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  advisor User @relation("NoteAdvisor", fields: [advisorId], references: [id], onDelete: Cascade)
+  student User @relation("NoteStudent", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([advisorId, studentId, createdAt])
+  @@index([studentId])
+}
+
+// ====== تخفیف دعوت دوست ======
+// دانش‌آموز A لینک خودش را به B می‌دهد؛ B با آن ثبت‌نام می‌کند. یک عدد تصادفی ۵ تا ۱۵ درصد
+// (drawnPercent) برای هر دو طرف قرعه‌کشی می‌شود. تخفیف بعد از «اولین پرداخت تأییدشده‌ی دعوت‌شده»
+// فعال می‌شود (status=ACTIVE) و ۳۶۵ روز از همان لحظه اعتبار دارد.
+// سقف مجموع تخفیف فعال هر دانش‌آموز ۱۵ درصد است؛ درصد واقعاً اعمال‌شده برای هر طرف هنگام
+// فعال‌سازی ثبت می‌شود (inviterPercent / inviteePercent) تا تغییر بعدی سقف، گذشته را عوض نکند.
+model Referral {
+  id             String    @id @default(cuid())
+  inviterId      String    @db.VarChar(100)
+  inviteeId      String    @unique @db.VarChar(100)
+  drawnPercent   Int
+  status         String    @default("PENDING") @db.VarChar(20) // PENDING | ACTIVE
+  inviterPercent Int?
+  inviteePercent Int?
+  activatedAt    DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  inviter User @relation("ReferralInviter", fields: [inviterId], references: [id], onDelete: Cascade)
+  invitee User @relation("ReferralInvitee", fields: [inviteeId], references: [id], onDelete: Cascade)
+
+  @@index([inviterId, status])
 }
