@@ -1,5 +1,6 @@
 const prisma = require('../config/prisma');
 const { buildExamDrafts } = require('../utils/examDraft');
+const { startOfTehranDay, endOfTehranDay, resolveStudyDay } = require('../utils/tehranDate');
 
 // این کنترلر همه‌ی عملیات مربوط به برنامه‌ی مطالعاتی را مدیریت می‌کند:
 // ساخت، ویرایش کامل، مشاهده، و تغییر وضعیت آیتم‌ها.
@@ -121,9 +122,99 @@ function itemCreateData(it, dayId) {
     data.dayId = dayId;
   }
   if (it.tags.length > 0) {
-    data.tags = { create: it.tags.map((tagId) => ({ tagId })) };
+    data.tags = { create: it.tags.map((tagId, i) => ({ tagId, order: i })) };
   }
   return data;
+}
+
+// تاریخ شروع و پایانِ برنامه را به مرز روزهای تهران تبدیل می‌کند:
+//   شروع  ← ۰۰:۰۰ همان روز     (برنامه از اولِ روز دیده شود)
+//   پایان ← ۲۳:۵۹:۵۹ همان روز  («تا فلان روز» یعنی تا آخر شبِ همان روز فعال بماند)
+// ورودی «YYYY-MM-DD» یا ISO است؛ همان روزی که مشاور انتخاب کرده ملاک است.
+function normalizePlanDates({ startsAt, expiresAt }, { requireStart = false } = {}) {
+  const out = {};
+  if (startsAt !== undefined || requireStart) {
+    const start = startOfTehranDay(startsAt);
+    if (!start) throw Object.assign(new Error('تاریخ شروع معتبر نیست'), { status: 400 });
+    out.startsAt = start;
+  }
+  if (expiresAt !== undefined) {
+    if (expiresAt === null || expiresAt === '') {
+      out.expiresAt = null;
+    } else {
+      const end = endOfTehranDay(expiresAt);
+      if (!end) throw Object.assign(new Error('تاریخ پایان معتبر نیست'), { status: 400 });
+      out.expiresAt = end;
+    }
+  }
+  if (out.startsAt && out.expiresAt && out.expiresAt < out.startsAt) {
+    throw Object.assign(new Error('تاریخ پایان باید بعد از تاریخ شروع باشد'), { status: 400 });
+  }
+  return out;
+}
+
+// مدت یک بازه به دقیقه (اگر ساعت‌ها کامل/معتبر نباشد ۰)
+function slotMinutes(startTime, endTime) {
+  if (!startTime || !endTime) return 0;
+  const [sh, sm] = startTime.split(':').map(Number);
+  const [eh, em] = endTime.split(':').map(Number);
+  if ([sh, sm, eh, em].some((n) => Number.isNaN(n))) return 0;
+  const diff = eh * 60 + em - (sh * 60 + sm);
+  return diff > 0 ? diff : 0;
+}
+
+// ثبت/پاک‌کردن خودکارِ «زمان مطالعه» وقتی وضعیت یک بازه عوض می‌شود:
+//   - انجام شد + یک تگ  ← کل زمان بازه برای همان تگ
+//   - انجام شد + چند تگ ← کل زمان بازه برای «تگ اول» (به ترتیب انتخاب مشاور)
+//   - انجام شد + بدون تگ ← کل زمان بازه به‌عنوان «سایر» (که ساعت مطالعه از دست نرود)
+//   - بازه‌ی بدون ساعت ← چیزی ثبت نمی‌شود (زمانی معلوم نیست)
+//   - اگر دانش‌آموز خودش دقیقه ثبت کرده باشد، ثبت دستی او دست‌نخورده می‌ماند
+//   - برداشتن تیک ← فقط لاگ‌های خودکار پاک می‌شوند
+// روزِ مطالعه = روزِ هفته‌ی همان بازه (نه امروز).
+async function syncAutoLog(db, itemId) {
+  const item = await db.planItem.findUnique({
+    where: { id: itemId },
+    include: {
+      day: { include: { plan: { select: { startsAt: true } } } },
+      tags: { orderBy: [{ order: 'asc' }, { id: 'asc' }] },
+      itemLogs: true,
+    },
+  });
+  if (!item) return;
+
+  const manual = item.itemLogs.filter((l) => !l.auto);
+  const autos = item.itemLogs.filter((l) => l.auto);
+  const minutes = slotMinutes(item.startTime, item.endTime);
+
+  const shouldHaveAuto = item.status === 'DONE' && manual.length === 0 && minutes > 0;
+  if (!shouldHaveAuto) {
+    if (autos.length > 0) {
+      await db.planItemLog.deleteMany({ where: { id: { in: autos.map((l) => l.id) } } });
+    }
+    return;
+  }
+
+  const tagId = item.tags.length > 0 ? item.tags[0].tagId : null;
+  const [keep, ...extra] = autos;
+  if (extra.length > 0) {
+    await db.planItemLog.deleteMany({ where: { id: { in: extra.map((l) => l.id) } } });
+  }
+  if (keep) {
+    await db.planItemLog.update({
+      where: { id: keep.id },
+      data: { tagId, minutes },
+    });
+    return;
+  }
+  await db.planItemLog.create({
+    data: {
+      planItemId: item.id,
+      tagId,
+      minutes,
+      auto: true,
+      studyDay: resolveStudyDay({ startsAt: item.day.plan.startsAt, dayOfWeek: item.day.dayOfWeek }),
+    },
+  });
 }
 
 // جایگزینی diff محور روزها و آیتم‌های یک برنامه در یک تراکنش.
@@ -195,16 +286,25 @@ async function replaceDays(tx, { planId, advisorId, days }) {
         },
       });
 
-      // همگام‌سازی تگ‌ها
+      // همگام‌سازی تگ‌ها (با حفظ ترتیب انتخاب مشاور؛ تگ اول = order صفر)
       const currentTagIds = new Set(existingById.get(it.id).tags.map((t) => t.tagId));
       const nextTagIds = new Set(it.tags);
       const toRemove = [...currentTagIds].filter((t) => !nextTagIds.has(t));
-      const toAdd = [...nextTagIds].filter((t) => !currentTagIds.has(t));
       if (toRemove.length > 0) {
         await tx.planItemTag.deleteMany({ where: { itemId: it.id, tagId: { in: toRemove } } });
       }
-      for (const tagId of toAdd) {
-        await tx.planItemTag.create({ data: { itemId: it.id, tagId } });
+      for (let i = 0; i < it.tags.length; i++) {
+        const tagId = it.tags[i];
+        if (currentTagIds.has(tagId)) {
+          await tx.planItemTag.updateMany({ where: { itemId: it.id, tagId }, data: { order: i } });
+        } else {
+          await tx.planItemTag.create({ data: { itemId: it.id, tagId, order: i } });
+        }
+      }
+
+      // اگر این بازه قبلاً «انجام شد» و زمانش خودکار ثبت شده، با ساعت/تگ جدید هماهنگ می‌شود
+      if (existingById.get(it.id).status === 'DONE') {
+        await syncAutoLog(tx, it.id);
       }
     }
 
@@ -264,14 +364,21 @@ async function createPlan(req, res, next) {
       }
     }
 
+    let dates;
+    try {
+      dates = normalizePlanDates({ startsAt, expiresAt: expiresAt || null }, { requireStart: true });
+    } catch (e) {
+      return res.status(e.status || 400).json({ error: e.message });
+    }
+
     const plan = await prisma.studyPlan.create({
       data: {
         title: String(title).trim(),
         note: note ? String(note).trim() : null,
         studentId,
         advisorId: req.user.id,
-        startsAt: new Date(startsAt),
-        expiresAt: expiresAt ? new Date(expiresAt) : null,
+        startsAt: dates.startsAt,
+        expiresAt: dates.expiresAt,
         isDraft: isDraft === true,
         days: {
           create: days.map((d) => ({
@@ -318,19 +425,27 @@ async function updatePlan(req, res, next) {
     if (note !== undefined) updatedPlanFields.note = note ? String(note).trim() : null;
     // انتشار پیش‌نویس: isDraft=false (updatedAt هم عوض می‌شود تا اعلان «به‌روزرسانی» برای دانش‌آموز بیاید)
     if (typeof isDraft === 'boolean') updatedPlanFields.isDraft = isDraft;
-    if (startsAt !== undefined) updatedPlanFields.startsAt = new Date(startsAt);
-    if (expiresAt !== undefined) {
-      updatedPlanFields.expiresAt = expiresAt ? new Date(expiresAt) : null;
+    // تاریخ‌ها: مقایسه‌ی پایان با شروع، با مقدارِ فعلی دیتابیس هم انجام می‌شود
+    try {
+      const dates = normalizePlanDates({ startsAt, expiresAt });
+      Object.assign(updatedPlanFields, dates);
+      const effStart = updatedPlanFields.startsAt || existing.startsAt;
+      const effEnd = updatedPlanFields.expiresAt !== undefined ? updatedPlanFields.expiresAt : existing.expiresAt;
+      if (effEnd && effEnd < effStart) {
+        return res.status(400).json({ error: 'تاریخ پایان باید بعد از تاریخ شروع باشد' });
+      }
+    } catch (e) {
+      return res.status(e.status || 400).json({ error: e.message });
     }
 
     const plan = await prisma.$transaction(async (tx) => {
-      if (Object.keys(updatedPlanFields).length > 0) {
-        await tx.studyPlan.update({ where: { id }, data: updatedPlanFields });
-      }
-
       if (Array.isArray(days)) {
         await replaceDays(tx, { planId: id, advisorId: req.user.id, days });
       }
+
+      // updatedAt را همیشه و صریح جلو می‌بریم — حتی اگر فقط درس‌ها/ساعت‌ها عوض شده باشند.
+      // اعلان «برنامه به‌روز شد» و بازخوانی خودکار پنل دانش‌آموز به همین مهر وابسته است.
+      await tx.studyPlan.update({ where: { id }, data: { ...updatedPlanFields, updatedAt: new Date() } });
 
       return tx.studyPlan.findUnique({ where: { id }, include: PLAN_INCLUDE });
     });
@@ -402,12 +517,20 @@ async function updateItemStatus(req, res, next) {
       return res.status(404).json({ error: 'آیتم یافت نشد' });
     }
 
-    const updated = await prisma.planItem.update({
-      where: { id },
-      data: { status },
+    // تغییر وضعیت و ثبت/پاک‌کردن خودکارِ زمان مطالعه در یک تراکنش
+    const result = await prisma.$transaction(async (tx) => {
+      const updated = await tx.planItem.update({ where: { id }, data: { status } });
+      await syncAutoLog(tx, id);
+      const logs = await tx.planItemLog.findMany({
+        where: { planItemId: id },
+        include: { tag: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      return { updated, logs };
     });
 
-    res.json({ item: updated });
+    // itemLogs را هم برمی‌گردانیم تا پنل بدون بازخوانی کامل، زمان ثبت‌شده را نشان بدهد
+    res.json({ item: result.updated, itemLogs: result.logs });
   } catch (err) {
     next(err);
   }
@@ -513,6 +636,7 @@ async function setItemTagLog(req, res, next) {
     // اطمینان از اینکه آیتم متعلق به این دانش‌آموز است
     const item = await prisma.planItem.findFirst({
       where: { id, day: { plan: { studentId: req.user.id } } },
+      include: { day: { include: { plan: { select: { startsAt: true } } } } },
     });
     if (!item) {
       return res.status(404).json({ error: 'آیتم یافت نشد' });
@@ -556,12 +680,15 @@ async function setItemTagLog(req, res, next) {
         await prisma.planItemLog.delete({ where: { id: existing.id } });
         return res.json({ log: null, deleted: true });
       }
+      // ویرایش دستی، لاگ خودکار را «دستی» می‌کند (از این به بعد با برداشتن تیک پاک نمی‌شود)
       log = await prisma.planItemLog.update({
         where: { id: existing.id },
         data: {
           minutes: mins,
           testsTaken: testsValue,
           note: noteValue,
+          auto: false,
+          ...(existing.studyDay ? {} : { studyDay: resolveStudyDay({ startsAt: item.day.plan.startsAt, dayOfWeek: item.day.dayOfWeek }) }),
         },
         include: { tag: true },
       });
@@ -570,6 +697,7 @@ async function setItemTagLog(req, res, next) {
         // چیزی برای ساختن نیست
         return res.json({ log: null, deleted: false });
       }
+      // ساعتِ ثبت‌شده برای «روزِ همان بازه» می‌رود، نه روزی که دانش‌آموز الان در آن است
       log = await prisma.planItemLog.create({
         data: {
           planItemId: id,
@@ -577,10 +705,19 @@ async function setItemTagLog(req, res, next) {
           minutes: mins,
           testsTaken: testsValue,
           note: noteValue,
+          auto: false,
+          studyDay: resolveStudyDay({ startsAt: item.day.plan.startsAt, dayOfWeek: item.day.dayOfWeek }),
         },
         include: { tag: true },
       });
     }
+
+    // دانش‌آموز شروع به ثبت دستی کرد: لاگ‌های خودکارِ دیگر همین بازه «دستی» می‌شوند تا
+    // ناگهان پاک نشوند (می‌تواند ویرایششان کند)
+    await prisma.planItemLog.updateMany({
+      where: { planItemId: id, auto: true, NOT: { id: log.id } },
+      data: { auto: false },
+    });
 
     res.json({ log });
   } catch (err) {

@@ -149,6 +149,12 @@ async function getChildSummary(req, res, next) {
       0
     );
 
+    // مطالعه‌ی آزادِ خودِ دانش‌آموز (خارج از برنامه‌ی مشاور) هم جزو مجموع مطالعه است
+    const freeAgg = await prisma.studyEntry.aggregate({
+      where: { studentId },
+      _sum: { minutes: true, testsTaken: true },
+    });
+
     // هدف هفتگی + مشاور
     const [goalLink, advisorLink] = await Promise.all([
       prisma.advisorStudentLink.findFirst({
@@ -206,8 +212,8 @@ async function getChildSummary(req, res, next) {
         activePlans: plans.length,
         doneItems: done,
         totalItems: allItems.length,
-        totalMinutes: logMinutes,
-        totalTests: logTests,
+        totalMinutes: logMinutes + (freeAgg._sum.minutes || 0),
+        totalTests: logTests + (freeAgg._sum.testsTaken || 0),
       },
       exams: exams.map((e) => ({
         id: e.id,

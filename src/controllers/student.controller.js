@@ -23,13 +23,19 @@ async function listMyStudents(req, res, next) {
             bio: true,
             field: true,
             photoUrl: true,
+            status: true,
           },
         },
       },
       orderBy: { createdAt: 'desc' },
     });
-    const students = links.map((link) => ({
-      ...link.student,
+    // «غیرفعال» = حساب دانش‌آموز توسط مدیر تعلیق/رد شده (وضعیت‌اش ACTIVE نیست).
+    // این دانش‌آموزها در فهرست می‌مانند (تاریخچه‌شان از بین نمی‌رود) ولی پنل مشاور آن‌ها را
+    // در بخش جدای «غیرفعال» و غیرقابل‌کلیک نشان می‌دهد.
+    const students = links.map(({ student: { status, ...student }, ...link }) => ({
+      ...student,
+      accountStatus: status,
+      isActive: status === 'ACTIVE',
       linkId: link.id,
       linkStatus: link.status,
       weeklyGoalMinutes: link.weeklyGoalMinutes,

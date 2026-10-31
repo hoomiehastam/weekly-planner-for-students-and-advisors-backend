@@ -155,6 +155,8 @@ async function deleteUserRelatedRows(client, userId) {
 
   // --- بقیه‌ی وابسته‌ها ---
   await c.studentNote.deleteMany({ where: { OR: [{ advisorId: userId }, { studentId: userId }] } });
+  await c.studyEntry.deleteMany({ where: { studentId: userId } });
+  await c.subjectProgress.deleteMany({ where: { studentId: userId } });
   await c.referral.deleteMany({ where: { OR: [{ inviterId: userId }, { inviteeId: userId }] } });
   await c.reminder.deleteMany({ where: { OR: [{ advisorId: userId }, { studentId: userId }] } });
   await c.tag.deleteMany({ where: { advisorId: userId } });

@@ -6,20 +6,32 @@ async function getSummary(req, res, next) {
     const now = new Date();
     const lastViewed = req.user.plansLastViewedAt || new Date(0);
 
-    const [unreadReminders, updatedPlans] = await Promise.all([
+    // برنامه‌های «فعال» برای دانش‌آموز: منتشرشده، شروع‌شده و تمام‌نشده
+    const activeWhere = {
+      studentId: req.user.id,
+      isDraft: false,
+      startsAt: { lte: now },
+      OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
+    };
+
+    const [unreadReminders, updatedPlans, newest, activeCount] = await Promise.all([
       prisma.reminder.count({ where: { studentId: req.user.id, readAt: null } }),
-      prisma.studyPlan.count({
-        where: {
-          studentId: req.user.id,
-          isDraft: false,
-          startsAt: { lte: now },
-          OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
-          updatedAt: { gt: lastViewed },
-        },
-      }),
+      prisma.studyPlan.count({ where: { ...activeWhere, updatedAt: { gt: lastViewed } } }),
+      prisma.studyPlan.findFirst({ where: activeWhere, orderBy: { updatedAt: 'desc' }, select: { updatedAt: true } }),
+      prisma.studyPlan.count({ where: activeWhere }),
     ]);
 
-    res.json({ unreadReminders, updatedPlans });
+    // plansVersion: «اثر انگشت» برنامه‌های فعال (تازه‌ترین تغییر + تعداد). پنل دانش‌آموز هر چند ثانیه
+    // این را می‌پرسد و اگر عوض شده بود، برنامه‌ها را دوباره می‌خواند؛ پس بعد از ویرایش مشاور
+    // لازم نیست دانش‌آموز صفحه را دستی رفرش کند. حذف/انقضای یک برنامه هم تعداد را عوض می‌کند.
+    const plansVersion = `${newest ? newest.updatedAt.getTime() : 0}:${activeCount}`;
+
+    res.json({
+      unreadReminders,
+      updatedPlans,
+      plansVersion,
+      plansLastViewedAt: req.user.plansLastViewedAt || null,
+    });
   } catch (err) {
     next(err);
   }

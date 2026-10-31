@@ -322,6 +322,9 @@ model User {
   mockExamScores  MockExamScore[]  @relation("MockExamStudent")
   // برنامه‌ی امتحان‌ها و پرسش‌های مدرسه که خودش ثبت کرده
   examEvents      StudentExamEvent[] @relation("StudentExamEventStudent")
+  // مطالعه‌ی آزاد (خارج از برنامه‌ی مشاور) و ثبت پیشروی هر درس که خودش وارد کرده
+  studyEntries     StudyEntry[]      @relation("StudyEntryStudent")
+  subjectProgress  SubjectProgress[] @relation("SubjectProgressStudent")
 
   // توکن‌های بازنشانی رمز عبور (فراموشی رمز)
   passwordResets PasswordReset[]
@@ -575,6 +578,9 @@ model PlanItemTag {
   // ۱۰۰۰ بایتی ایندکس روی utf8mb4 در هاست اشتراکی.
   itemId String @db.VarChar(100)
   tagId  String @db.VarChar(100)
+  // ترتیبی که مشاور تگ‌ها را انتخاب کرده (۰ = اولین تگ). «تگ اول» هنگام تیک‌زدن درس
+  // (ثبت خودکار زمان) با همین ترتیب مشخص می‌شود.
+  order  Int    @default(0)
 
   item PlanItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
   tag  Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
@@ -600,6 +606,12 @@ model PlanItemLog {
   testsTaken Int?
   // توضیح اختیاری، مخصوصاً برای «سایر کارها»
   note       String?  @db.Text
+  // روزی (تقویم تهران، «YYYY-MM-DD») که این مطالعه به آن تعلق دارد — نه لزوماً روزی که ثبت شده.
+  // مثلاً دوشنبه ساعتِ یکشنبه را وارد کند، برای یکشنبه ثبت می‌شود. از روز هفته‌ی بازه‌ی برنامه محاسبه می‌شود.
+  studyDay   String?  @db.VarChar(10)
+  // true = با تیک‌زدن «انجام شد» خودکار ساخته شده (زمانِ کل بازه)؛ با ویرایش دستی دانش‌آموز false می‌شود
+  // و با برداشتن تیک فقط لاگ‌های خودکار پاک می‌شوند.
+  auto       Boolean  @default(false)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -851,4 +863,51 @@ model Referral {
   invitee User @relation("ReferralInvitee", fields: [inviteeId], references: [id], onDelete: Cascade)
 
   @@index([inviterId, status])
+}
+
+
+// ====== مطالعه‌ی آزاد دانش‌آموز ======
+// برنامه‌ی مشاور «پیشنهادی» است: دانش‌آموز هر درسی را که در هر مدتی خوانده، حتی اگر در برنامه نبوده،
+// خودش وارد می‌کند و مشاور (و والد) می‌بیند. در آمار و نمودار ساعتی با لاگ‌های برنامه جمع می‌شود.
+model StudyEntry {
+  id         String   @id @default(cuid())
+  studentId  String   @db.VarChar(100)
+  // روزی که خوانده (تقویم تهران، YYYY-MM-DD)؛ تا امروز و حداکثر ۶۰ روز قبل
+  studyDay   String   @db.VarChar(10)
+  subject    String   @db.VarChar(100)
+  chapter    String?  @db.VarChar(191)
+  // نام تگ (رونوشت)؛ تگ‌ها بین مشاورها فرق دارند و حذف تگ نباید ثبت را خراب کند
+  tagName    String?  @db.VarChar(60)
+  // ساعت شروع و پایان (اختیاری). اگر هر دو پر باشند minutes از همان محاسبه می‌شود
+  startTime  String?  @db.VarChar(5)
+  endTime    String?  @db.VarChar(5)
+  minutes    Int
+  testsTaken Int?
+  note       String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  student User @relation("StudyEntryStudent", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId, studyDay])
+}
+
+// ====== پیشروی هر درس ======
+// دانش‌آموز آخر هر روز می‌نویسد برای هر درس تا کجا رسیده (مثلاً «صفحه‌ی ۱۲۰» یا «درس ۴ — بخش ۲»)
+// تا مشاور هنگام برنامه‌ریزی، ادامه‌ی پیشروی را از همان نقطه بچیند. برای هر (دانش‌آموز، روز، درس) یک ردیف.
+model SubjectProgress {
+  id         String   @id @default(cuid())
+  studentId  String   @db.VarChar(100)
+  studyDay   String   @db.VarChar(10)
+  // کلید مقایسه‌ی نام درس (ی/ک یکسان‌شده، فاصله‌ها فشرده)
+  subjectKey String   @db.VarChar(80)
+  subject    String   @db.VarChar(100)
+  position   String   @db.VarChar(191)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  student User @relation("SubjectProgressStudent", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, studyDay, subjectKey])
+  @@index([studentId, subjectKey])
 }

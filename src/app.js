@@ -53,6 +53,15 @@ app.use(
   })
 );
 
+// پاسخ‌های API هرگز نباید در مرورگر، هاست اشتراکی (cPanel/LiteSpeed) یا واسطه‌ها کش شوند؛
+// وگرنه دانش‌آموز بعد از ویرایش مشاور هنوز برنامه‌ی قدیمی را می‌بیند.
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
+
 // محدودیت حجم بدنه‌ی درخواست — عکس‌های base64 سؤالات آزمون می‌توانند حجیم باشند
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
@@ -77,6 +86,7 @@ app.use('/api/advisors', require('./routes/advisor.routes'));
 app.use('/api/admin', require('./routes/admin.routes'));
 app.use('/api/tags', require('./routes/tag.routes'));
 app.use('/api/plans', require('./routes/plan.routes'));
+app.use('/api/study', require('./routes/study.routes'));
 app.use('/api/quotes', require('./routes/quote.routes'));
 app.use('/api/students', require('./routes/student.routes'));
 app.use('/api/reminders', require('./routes/reminder.routes'));
