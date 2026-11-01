@@ -6,6 +6,8 @@ const prisma = require('../config/prisma');
 // و مدیریت حسابش ندارد. همه‌ی مسیرهای کاری (برنامه، آزمون، یادآور، مدیریت ...) بسته‌اند.
 const SUBSCRIPTION_EXEMPT_PATHS = [
   '/api/subscription/me',
+  '/api/subscription/deposit-context',
+  '/api/subscription/me/card',
   '/api/deposits',
   '/api/auth/me',
   '/api/auth/logout',
@@ -15,8 +17,8 @@ const SUBSCRIPTION_EXEMPT_PATHS = [
 
 function isSubscriptionExempt(method, url) {
   const path = (url || '').split('?')[0];
-  // اندپوینت‌های خودِ deposit — همه‌ی متدها آزادند تا کاربر رسیدش را ببیند/بفرستد
-  if (path.startsWith('/api/deposits')) return true;
+  // اندپوینت‌های اشتراک و واریز — همه‌ی متدها آزادند تا کاربر وضعیتش را ببیند، شماره کارت مقصد را دریافت کند و رسید بفرستد
+  if (path.startsWith('/api/subscription') || path.startsWith('/api/deposits')) return true;
   if (!SUBSCRIPTION_EXEMPT_PATHS.includes(path)) return false;
   // خواندن و تغییر پروفایل/رمز آزاد است؛ ولی تغییر داده‌های دیگر نه
   return ['GET', 'PUT'].includes(method) || path !== '/api/auth/me';
