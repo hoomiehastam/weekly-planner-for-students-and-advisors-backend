@@ -1103,8 +1103,101 @@ async function requestOtp(req, res, next) {
   }
 }
 
+// ثبت‌نام عمومی مؤسسه/آموزشگاه (B2B): مدیر مشخصات آموزشگاه و حساب خودش را وارد می‌کند.
+// هر دو در وضعیت PENDING ثبت می‌شوند تا پس از بررسی سوپرادمین تأیید شوند.
+async function registerInstitute(req, res, next) {
+  try {
+    const { instituteName, managerName, phone, password } = req.body;
+
+    const trimmedInstitute = String(instituteName || '').trim();
+    if (trimmedInstitute.length < 2) {
+      return res.status(400).json({ error: 'نام مؤسسه باید حداقل ۲ کاراکتر باشد' });
+    }
+
+    const trimmedManager = String(managerName || '').trim();
+    if (trimmedManager.length < 2) {
+      return res.status(400).json({ error: 'نام و نام خانوادگی مدیر باید حداقل ۲ کاراکتر باشد' });
+    }
+
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone) {
+      return res.status(400).json({ error: 'شماره تماس وارد شده معتبر نیست' });
+    }
+
+    const existingUser = await prisma.user.findFirst({
+      where: { phone: cleanPhone },
+    });
+    if (existingUser) {
+      return res.status(409).json({ error: 'با این شماره تماس قبلاً حساب کاربری ساخته شده است' });
+    }
+
+    const passErr = validatePassword(password);
+    if (passErr) {
+      return res.status(400).json({ error: passErr });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+
+    // ساخت ایمیل داخلی یکتا برای کاربر
+    const digits = String(cleanPhone).replace(/[^\d]/g, '').slice(-10) || crypto.randomBytes(5).toString('hex');
+    const finalEmail = `inst_mgr.${digits}.${Date.now().toString(36)}@${LOCAL_EMAIL_DOMAIN}`;
+
+    // کد ۸ کاراکتری دعوت مؤسسه بدون حروف گیج‌کننده
+    const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    const code = Array.from(crypto.randomBytes(8))
+      .map((b) => alphabet[b % alphabet.length])
+      .join('')
+      .slice(0, 8);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const institute = await tx.institute.create({
+        data: {
+          name: trimmedInstitute,
+          code,
+          status: 'PENDING',
+        },
+      });
+
+      const user = await tx.user.create({
+        data: {
+          fullName: trimmedManager,
+          email: finalEmail,
+          phone: cleanPhone,
+          password: hashedPassword,
+          role: 'INSTITUTE_MANAGER',
+          status: 'PENDING',
+          instituteId: institute.id,
+        },
+      });
+
+      await tx.institute.update({
+        where: { id: institute.id },
+        data: { leaderId: user.id },
+      });
+
+      await tx.instituteSubscription.create({
+        data: {
+          instituteId: institute.id,
+          status: 'TRIAL',
+          endsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+        },
+      });
+
+      return { institute, user };
+    });
+
+    res.status(201).json({
+      message: 'درخواست ثبت آموزشگاه ثبت شد. پس از بررسی و تأیید مدیریت سامانه، پیامک فعال‌سازی ارسال خواهد شد.',
+      instituteId: result.institute.id,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   register,
+  registerInstitute,
   login,
   logout,
   getMe,

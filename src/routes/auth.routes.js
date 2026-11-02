@@ -3,6 +3,7 @@ const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const {
   register,
+  registerInstitute,
   login,
   logout,
   getMe,
@@ -29,6 +30,7 @@ const otpRequestLimiter = rateLimit({
 });
 
 router.post('/register', validate(schemas.register), register);
+router.post('/register-institute', validate(schemas.registerInstitute), registerInstitute);
 router.post('/login', validate(schemas.login), login);
 router.post('/logout', logout);
 

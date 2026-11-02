@@ -6,10 +6,12 @@ const { remainingInstituteCapacity, CAPACITY_ERROR } = require('../utils/subscri
 const { isStudentCountable, countActiveStudentsOfAdvisor, countActiveStudentsOfInstitute } = require('../utils/capacity');
 const { writeAuditLog } = require('../utils/audit');
 const { pruneAdvisorStudentLinks, deleteUserRelatedRows } = require('../utils/orphans');
+const { normalizePhone, validatePassword } = require('../utils/normalizers');
 
 const OTP_LENGTH = 8;
 const OTP_TTL_HOURS_DEFAULT = 24;
 const SALT_ROUNDS = 10;
+const LOCAL_EMAIL_DOMAIN = 'local.daneshamozino.ir';
 
 // فهرست مشاورانی که هنوز منتظر تایید هستند
 // شامل شماره تماس و توضیحات تا سوپرادمین با آگاهی کامل تصمیم بگیرد
@@ -38,11 +40,12 @@ async function listPendingAdvisors(req, res, next) {
 
 // ====== مدیریت مؤسسه‌ها (سوپرادمین) ======
 
-// ثبت مؤسسه‌ی جدید — سوپرادمین دستی می‌سازد (فروش B2B؛ ثبت‌نام عمومی مؤسسه فعلاً نیست)
-// کد دعوت خودکار تولید می‌شود تا مدیر مؤسسه در ثبت‌نام اعضا بدهد
+// ثبت مؤسسه‌ی جدید توسط سوپرادمین
+// می‌تواند همراه با ایجاد مستقیم حساب مدیر مؤسسه (نام، شماره تماس، رمز عبور) باشد
+// تا نیازی به وابستگی به مشاوران قبلی نباشد.
 async function createInstitute(req, res, next) {
   try {
-    const { name } = req.body;
+    const { name, managerName, managerPhone, managerPassword, monthlyPrice } = req.body;
     const trimmed = String(name || '').trim();
     if (trimmed.length < 2) {
       return res.status(400).json({ error: 'نام مؤسسه باید حداقل ۲ کاراکتر باشد' });
@@ -55,6 +58,87 @@ async function createInstitute(req, res, next) {
       .join('')
       .slice(0, 8);
 
+    // اگر اطلاعات مدیر وارد شده باشد، در یک تراکنش مؤسسه + مدیر ساخته می‌شوند
+    if (managerPhone || managerPassword || managerName) {
+      const cleanPhone = normalizePhone(managerPhone);
+      if (!cleanPhone) {
+        return res.status(400).json({ error: 'شماره تماس مدیر مؤسسه معتبر نیست' });
+      }
+      const existingUser = await prisma.user.findFirst({
+        where: { phone: cleanPhone },
+      });
+      if (existingUser) {
+        return res.status(409).json({ error: 'این شماره تماس قبلاً در سامانه ثبت شده است' });
+      }
+      const passErr = validatePassword(managerPassword);
+      if (passErr) {
+        return res.status(400).json({ error: passErr });
+      }
+
+      const hashedPassword = await bcrypt.hash(managerPassword, SALT_ROUNDS);
+      const digits = String(cleanPhone).replace(/[^\d]/g, '').slice(-10) || crypto.randomBytes(5).toString('hex');
+      const finalEmail = `inst_mgr.${digits}.${Date.now().toString(36)}@${LOCAL_EMAIL_DOMAIN}`;
+      const finalManagerName = String(managerName || '').trim() || 'مدیر آموزشگاه';
+
+      const priceNum = monthlyPrice != null && String(monthlyPrice).trim() !== '' ? parseInt(monthlyPrice, 10) : null;
+
+      const result = await prisma.$transaction(async (tx) => {
+        const institute = await tx.institute.create({
+          data: {
+            name: trimmed,
+            code,
+            status: 'ACTIVE',
+            monthlyPrice: priceNum,
+          },
+        });
+
+        const user = await tx.user.create({
+          data: {
+            fullName: finalManagerName,
+            email: finalEmail,
+            phone: cleanPhone,
+            password: hashedPassword,
+            role: 'INSTITUTE_MANAGER',
+            status: 'ACTIVE',
+            instituteId: institute.id,
+          },
+        });
+
+        const updatedInst = await tx.institute.update({
+          where: { id: institute.id },
+          data: { leaderId: user.id },
+          include: {
+            leader: { select: { id: true, fullName: true, phone: true } },
+          },
+        });
+
+        await tx.instituteSubscription.create({
+          data: {
+            instituteId: institute.id,
+            status: 'ACTIVE',
+            endsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+          },
+        });
+
+        return { institute: updatedInst, user };
+      });
+
+      await writeAuditLog({
+        actorId: req.user.id,
+        action: 'INSTITUTE_SUBSCRIPTION_SET',
+        targetType: 'INSTITUTE',
+        targetId: result.institute.id,
+        details: { label: trimmed, managerName: finalManagerName, phone: cleanPhone },
+      });
+
+      return res.status(201).json({
+        message: `آموزشگاه «${trimmed}» و حساب مدیر «${finalManagerName}» ساخته شدند`,
+        institute: result.institute,
+        manager: { id: result.user.id, fullName: result.user.fullName, phone: result.user.phone },
+      });
+    }
+
+    // حالت سازگاری با گذشته (فقط نام مؤسسه)
     const institute = await prisma.institute.create({
       data: { name: trimmed, code },
     });
@@ -116,7 +200,7 @@ async function activateInstitute(req, res, next) {
     if (!institute) {
       return res.status(404).json({ error: 'مؤسسه یافت نشد' });
     }
-    // فعال‌سازی + آغاز دوره‌ی آزمایشی ۱۴ روزه در یک تراکنش
+    // فعال‌سازی مؤسسه + آغاز دوره‌ی آزمایشی ۱۴ روزه + فعال‌سازی حساب مدیر مؤسسه (در صورت وجود) در یک تراکنش
     const updated = prisma.institute.update({
       where: { id },
       data: { status: 'ACTIVE' },
@@ -130,8 +214,26 @@ async function activateInstitute(req, res, next) {
       },
       update: { status: 'ACTIVE' },
     });
-    await prisma.$transaction([updated, sub]);
-    res.json({ message: 'مؤسسه فعال شد', institute: { id, status: 'ACTIVE' } });
+    const ops = [updated, sub];
+    if (institute.leaderId) {
+      ops.push(
+        prisma.user.update({
+          where: { id: institute.leaderId },
+          data: { status: 'ACTIVE' },
+        })
+      );
+    }
+    await prisma.$transaction(ops);
+
+    await writeAuditLog({
+      actorId: req.user.id,
+      action: 'INSTITUTE_SUBSCRIPTION_SET',
+      targetType: 'INSTITUTE',
+      targetId: id,
+      details: { label: institute.name, action: 'ACTIVATE' },
+    });
+
+    res.json({ message: 'مؤسسه و حساب مدیر با موفقیت فعال شد', institute: { id, status: 'ACTIVE' } });
   } catch (err) {
     next(err);
   }

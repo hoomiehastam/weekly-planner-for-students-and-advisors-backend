@@ -76,3 +76,35 @@ test('الفبای کد دعوت حروف گیج‌کننده (0/O/1/I) ندار
   assert.equal(ALPHABET.includes('1'), false);
   assert.equal(ALPHABET.includes('I'), false);
 });
+
+const { schemas } = require('../src/utils/validators');
+
+test('registerInstitute: ورودی کامل و معتبر پذیرفته می‌شود', () => {
+  const parsed = schemas.registerInstitute.safeParse({
+    instituteName: 'آموزشگاه گاج',
+    managerName: 'علی رضایی',
+    phone: '09121234567',
+    password: 'Password123',
+  });
+  assert.equal(parsed.success, true);
+});
+
+test('registerInstitute: نام مؤسسه کوتاه رد می‌شود', () => {
+  const parsed = schemas.registerInstitute.safeParse({
+    instituteName: 'آ',
+    managerName: 'علی رضایی',
+    phone: '09121234567',
+    password: 'Password123',
+  });
+  assert.equal(parsed.success, false);
+});
+
+test('registerInstitute: رمز ضعیف رد می‌شود', () => {
+  const parsed = schemas.registerInstitute.safeParse({
+    instituteName: 'آموزشگاه گاج',
+    managerName: 'علی رضایی',
+    phone: '09121234567',
+    password: '123',
+  });
+  assert.equal(parsed.success, false);
+});

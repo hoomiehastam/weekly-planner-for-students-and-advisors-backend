@@ -267,10 +267,18 @@ function validate(schema, source = 'body') {
   };
 }
 
+const registerInstituteSchema = z.object({
+  instituteName: z.string().trim().min(2, 'نام مؤسسه باید حداقل ۲ کاراکتر باشد').max(100, 'نام مؤسسه نباید بیشتر از ۱۰۰ کاراکتر باشد'),
+  managerName: z.string().trim().min(2, 'نام مدیر باید حداقل ۲ کاراکتر باشد').max(80, 'نام مدیر نباید بیشتر از ۸۰ کاراکتر باشد'),
+  phone: phoneSchema,
+  password: passwordSchema,
+});
+
 module.exports = {
   validate,
   schemas: {
     register: registerSchema,
+    registerInstitute: registerInstituteSchema,
     login: loginSchema,
     profile: profileSchema,
     chooseAdvisor: chooseAdvisorSchema,
