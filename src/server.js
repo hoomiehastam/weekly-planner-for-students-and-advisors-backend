@@ -1,14 +1,12 @@
-// بارگذاری متغیرهای محیطی از فایل .env
-// نکته‌ی مهم: override: true باعث می‌شود مقادیر فایل .env بر متغیرهای از پیش موجود
-// shell ارجحیت داشته باشند. این رفتار برای اجرای لوکال مفید است.
-// در محیط Render خودش DATABASE_URL را در runtime تزریق می‌کند؛ چون فایل .env در
-// Render وجود ندارد، این override تأثیری روی محیط تولید نخواهد داشت.
+// ذخیره‌ی پورت اختصاص‌یافته توسط سرور (مانند Phusion Passenger در cPanel) قبل از لود .env
+const systemPort = process.env.PORT;
 require('dotenv').config({ override: true });
 const app = require('./app');
 const prisma = require('./config/prisma');
 const { pruneAdvisorStudentLinks, pruneOrphanRows } = require('./utils/orphans');
 
-const PORT = process.env.PORT || 4000;
+// اگر سرور/هاست پورتی مشخص کرده باشد (Passenger/cPanel)، اولویت با آن است
+const PORT = systemPort || process.env.PORT || 4000;
 const SWEEP_ON_BOOT = process.env.ORPHAN_SWEEP_ON_BOOT === '1';
 
 async function start() {
