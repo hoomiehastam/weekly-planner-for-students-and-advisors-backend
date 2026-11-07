@@ -4,6 +4,7 @@ const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const { requestLogger } = require('./config/logger');
+const prisma = require('./config/prisma');
 
 const app = express();
 
@@ -91,6 +92,28 @@ app.use(requestLogger);
 // اندپوینت سلامت سرور - برای اطمینان از بالا بودن سرویس و اتصال درست
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'konkur-backend' });
+});
+
+// اندپوینت تشخیصی اتصال دیتابیس — با مهلت حداکثر ۴ ثانیه تا در صورت مشکل دیتابیس معلق نماند
+app.get('/api/debug-db', async (req, res) => {
+  const start = Date.now();
+  try {
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Prisma Query Timed out after 4000ms')), 4000)
+    );
+    const queryPromise = prisma.$queryRaw`SELECT 1 as test`;
+    const result = await Promise.race([queryPromise, timeoutPromise]);
+    res.json({ ok: true, duration: Date.now() - start, result });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      duration: Date.now() - start,
+      error: err.message,
+      name: err.name,
+      code: err.code,
+      stack: err.stack ? err.stack.split('\n').slice(0, 5) : [],
+    });
+  }
 });
 
 // ریشه‌ی سایت - Render با HEAD / سلامت سرویس را چک می‌کند و پاسخ
