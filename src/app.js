@@ -7,27 +7,46 @@ const { requestLogger } = require('./config/logger');
 
 const app = express();
 
-// هدرهای امنیتی پایه
-app.use(helmet());
+// هدرهای امنیتی پایه — با امکان درخواست cross-origin از ساب‌دامین
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
 
 // محدودکردن مبدأ درخواست‌ها به فرانت‌اند مجاز
-// در حالت تولید از متغیر محیطی CORS_ORIGIN استفاده می‌شود (چند origin با کاما)
-const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173')
+// دامنه‌های پیش‌فرض daneshamoozino.ir و لوکال همیشه مجازند تا ناهماهنگی .env مانع اتصال نشود
+const defaultOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'https://daneshamoozino.ir',
+  'https://www.daneshamoozino.ir',
+  'https://api.daneshamoozino.ir',
+];
+const envOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
 
-app.use(
-  cors({
-    origin(origin, cb) {
-      // درخواست‌های غیرمرورگری مثل curl یا سرورها origin ندارند؛ مجازند
-      if (!origin) return cb(null, true);
-      if (allowedOrigins.includes(origin)) return cb(null, true);
-      return cb(Object.assign(new Error('مبدأ درخواست مجاز نیست'), { status: 403 }));
-    },
-    credentials: true,
-  })
-);
+const corsOptions = {
+  origin(origin, cb) {
+    // درخواست‌های غیرمرورگری مثل curl یا سرورها origin ندارند؛ مجازند
+    if (!origin) return cb(null, true);
+    if (
+      allowedOrigins.includes(origin) ||
+      /^https?:\/\/([a-z0-9-]+\.)?daneshamoozino\.ir$/i.test(origin)
+    ) {
+      return cb(null, true);
+    }
+    return cb(Object.assign(new Error('مبدأ درخواست مجاز نیست'), { status: 403 }));
+  },
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 // رد سرعت درخواست‌های احراز هویت برای مقابله با brute force
 app.use(
